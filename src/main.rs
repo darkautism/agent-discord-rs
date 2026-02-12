@@ -71,13 +71,9 @@ impl I18n {
         let content = if let Some(file) = Asset::get(&path) {
             std::str::from_utf8(file.data.as_ref()).expect("Invalid UTF-8 in locale").to_string()
         } else {
-            // Fallback to reading from filesystem if not found embedded (useful for dev)
-            if let Ok(c) = fs::read_to_string(format!("locales/{}", path)) {
-                c
-            } else {
-                eprintln!("Warning: Locale {} not found, defaulting to en", lang);
-                r#"{"processing": "Processing...", "api_error": "API Error", "user_aborted": "Aborted", "aborted_desc": "User aborted.", "pi_response": "Pi Response", "pi_working": "Thinking...", "wait": "Please wait...", "abort_sent": "Abort signal sent.", "loading_skill": "Loading skill {}...", "exec_success": "Success: {}", "exec_failed": "Failed: {}"}"#.to_string()
-            }
+            // Last ditch fallback to English
+            eprintln!("Warning: Locale {} not found, defaulting to en", lang);
+            r#"{"processing": "Processing...", "api_error": "API Error", "user_aborted": "Aborted", "aborted_desc": "User aborted.", "pi_response": "Pi Response", "pi_working": "Thinking...", "wait": "Please wait...", "abort_sent": "Abort signal sent.", "loading_skill": "Loading skill {}...", "exec_success": "Success: {}", "exec_failed": "Failed: {}"}"#.to_string()
         };
         let texts = serde_json::from_str(&content).expect("Failed to parse locale");
         I18n { texts }
@@ -90,21 +86,26 @@ impl I18n {
     }
 }
 
+fn get_session_dir() -> PathBuf {
+    let home = if let Some(user_dirs) = UserDirs::new() {
+        user_dirs.home_dir().to_path_buf()
+    } else {
+        std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
+    };
+    home.join(".pi").join("discord-rs").join("sessions")
+}
+
 struct PiInstance {
     stdin: Arc<Mutex<ChildStdin>>,
     event_tx: broadcast::Sender<Value>,
     msg_buffer: Arc<Mutex<Vec<String>>>,
     is_processing: Arc<AtomicBool>,
+    _child: tokio::process::Child, // Keep the child alive
 }
 
 impl PiInstance {
     async fn new(channel_id: u64, config: &Config) -> anyhow::Result<Arc<Self>> {
-        // Hardcoded session directory to ~/.pi/discord-rs/sessions
-        let session_dir = if let Some(user_dirs) = UserDirs::new() {
-             user_dirs.home_dir().join(".pi").join("discord-rs").join("sessions")
-        } else {
-             PathBuf::from("sessions")
-        };
+        let session_dir = get_session_dir();
         fs::create_dir_all(&session_dir)?;
 
         // Use PI_BINARY env var if set (from daemon), otherwise default to "pi"
@@ -116,33 +117,81 @@ impl PiInstance {
         cmd.arg("--session").arg(session_file);
         cmd.arg("--session-dir").arg(session_dir);
         
-        let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
-        let stdin = Arc::new(Mutex::new(child.stdin.take().unwrap()));
-        let stdout = child.stdout.take().unwrap();
+        let mut child = cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        info!("🚀 Started pi process for channel {}: {:?}", channel_id, cmd);
+
+        let stdin_raw = child.stdin.take().ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
+        let stdin = Arc::new(Mutex::new(stdin_raw));
+        let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("Failed to open stdout"))?;
+        let stderr = child.stderr.take().ok_or_else(|| anyhow::anyhow!("Failed to open stderr"))?;
+        
         let (event_tx, _) = broadcast::channel(1000);
         let tx = event_tx.clone();
-        let mut reader = BufReader::new(stdout);
+
+        // Task to log stderr
         tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr);
             let mut line = String::new();
             while let Ok(n) = reader.read_line(&mut line).await {
                 if n == 0 { break; }
-                debug!("[RAW-{}]: {}", channel_id, line.trim());
-                if let Ok(val) = serde_json::from_str::<Value>(&line) { let _ = tx.send(val); }
+                info!("[PI-STDERR-{}]: {}", channel_id, line.trim());
                 line.clear();
             }
         });
-        let instance = Arc::new(PiInstance { stdin, event_tx, msg_buffer: Arc::new(Mutex::new(Vec::new())), is_processing: Arc::new(AtomicBool::new(false)) });
+
+        // Task to parse stdout
+        let tx_c = tx.clone();
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            while let Ok(n) = reader.read_line(&mut line).await {
+                if n == 0 { 
+                    info!("🔌 Pi process stdout closed for channel {}", channel_id);
+                    let _ = tx_c.send(json!({"type": "error", "assistantMessageEvent": {"type": "error", "errorMessage": "Pi process exited unexpectedly."}}));
+                    break; 
+                }
+                let trimmed = line.trim();
+                if trimmed.is_empty() { continue; }
+                
+                if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
+                    let _ = tx_c.send(val);
+                } else {
+                    info!("[PI-STDOUT-{}]: {}", channel_id, trimmed);
+                }
+                line.clear();
+            }
+        });
+
+        let instance = Arc::new(PiInstance { 
+            stdin, 
+            event_tx, 
+            msg_buffer: Arc::new(Mutex::new(Vec::new())), 
+            is_processing: Arc::new(AtomicBool::new(false)),
+            _child: child,
+        });
         let mut rx = instance.event_tx.subscribe();
+        
+        // Initial setup
         instance.raw_call(json!({ "type": "set_session_name", "name": format!("discord-rs-{}", channel_id) })).await?;
         let id = instance.raw_call(json!({ "type": "get_state" })).await?;
+        
         while let Ok(ev) = rx.recv().await {
             if ev["type"] == "response" && ev["id"] == id {
                 if ev["data"]["messageCount"].as_u64().unwrap_or(0) == 0 {
-                    if let Some(ref p) = config.initial_prompt { instance.raw_call(json!({ "type": "prompt", "message": p })).await?; }
+                    if let Some(ref p) = config.initial_prompt { 
+                        instance.raw_call(json!({ "type": "prompt", "message": p })).await?; 
+                    }
                 }
                 break;
             }
+            if ev["type"] == "error" {
+                anyhow::bail!("Pi initialization error: {}", ev["assistantMessageEvent"]["errorMessage"]);
+            }
         }
+        
         Ok(instance)
     }
     async fn raw_call(&self, mut cmd: Value) -> anyhow::Result<String> {
@@ -171,10 +220,6 @@ impl Handler {
             let skip = count - max;
             format!("...{}", s.chars().skip(skip).collect::<String>())
         } else { s.to_string() }
-    }
-
-    fn smallify(s: &str) -> String {
-        format!(">>> *{}*\n", s)
     }
 
     async fn start_loop(pi: Arc<PiInstance>, http: Arc<Http>, ch_id: ChannelId, i18n: Arc<I18n>) {
@@ -228,13 +273,31 @@ impl Handler {
                         let mut embed = CreateEmbed::new();
                         let mut desc = String::new();
                         if !thinking.is_empty() {
-                            desc.push_str(&Self::smallify(&format!("🧠 {}", Self::safe_truncate(&thinking, 500))));
+                            let thinking_txt = format!("🧠 {}", Self::safe_truncate(&thinking, 500));
+                            // Format: Start with "> ", replace all internal newlines with "\n> "
+                            desc.push_str("> ");
+                            desc.push_str(&thinking_txt.replace("\n", "\n> "));
+                            // Ensure there's a trailing newline after the quote block to prevent it from "sticky"
+                            if !desc.ends_with('\n') {
+                                desc.push_str("\n");
+                            }
                             desc.push_str("\n");
                         }
                         match status {
-                            ExecStatus::Error(ref e) => { embed = embed.title(i18n.get("api_error")).color(0xff0000); desc.push_str(&format!("**Error:** {}", e)); }
-                            ExecStatus::Aborted => { embed = embed.title(i18n.get("user_aborted")).color(0xff0000); desc.push_str(&i18n.get("aborted_desc")); }
-                            ExecStatus::Success => { embed = embed.title(i18n.get("pi_response")).color(0x00ff00); desc.push_str(&text); }
+                            ExecStatus::Error(ref e) => {
+                                embed = embed.title(i18n.get("api_error")).color(0xff0000);
+                                if !text.is_empty() { desc.push_str(&format!("{}\n\n", text)); }
+                                desc.push_str(&format!("❌ **Error:** {}", e));
+                            }
+                            ExecStatus::Aborted => {
+                                embed = embed.title(i18n.get("user_aborted")).color(0xff0000);
+                                if !text.is_empty() { desc.push_str(&format!("{}\n\n", text)); }
+                                desc.push_str(&format!("⚠️ {}", i18n.get("aborted_desc")));
+                            }
+                            ExecStatus::Success => {
+                                embed = embed.title(i18n.get("pi_response")).color(0x00ff00);
+                                desc.push_str(&text);
+                            }
                             ExecStatus::Running => {
                                 embed = embed.title(i18n.get("pi_working")).color(0xFFA500);
                                 if !tool_info.is_empty() { desc.push_str(&format!("{}\n\n", tool_info)); }
@@ -338,7 +401,19 @@ impl EventHandler for Handler {
                         Some(pi.raw_call(json!({ "type": "set_thinking_level", "level": lvl })).await.unwrap())
                     }
                     "compact" => Some(pi.raw_call(json!({ "type": "compact" })).await.unwrap()),
-                    "clear" => Some(pi.raw_call(json!({ "type": "new_session" })).await.unwrap()),
+                    "clear" => {
+                        // HARD CLEAR: Drop instance and delete file
+                        let mut instances = self.instances.write().await;
+                        instances.remove(&channel_id); // This drops the instance and kills the 'pi' process
+                        
+                        let session_file = get_session_dir().join(format!("discord-rs-{}.jsonl", channel_id));
+                        if session_file.exists() {
+                            let _ = fs::remove_file(session_file);
+                        }
+                        
+                        let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().content(self.i18n.get_arg("exec_success", "clear"))).await;
+                        return;
+                    }
                     "skill" => {
                         let n = command.data.options.iter().find(|o| o.name == "name").and_then(|o| o.value.as_str()).unwrap_or("");
                         pi.msg_buffer.lock().await.push(format!("/skill:{}", n));
@@ -353,11 +428,23 @@ impl EventHandler for Handler {
                     let http = ctx.http.clone();
                     let cmd_clone = command.clone();
                     let i18n = self.i18n.clone();
+                    let pi_c = pi.clone();
+                    let initial_prompt = self.config.initial_prompt.clone();
+                    let cmd_name_c = cmd_name.clone();
+                    
                     tokio::spawn(async move {
                         while let Ok(event) = rx.recv().await {
                             if event["type"] == "response" && event["id"] == rid {
-                                let c = if event["success"].as_bool().unwrap_or(false) { i18n.get_arg("exec_success", &cmd_name) } else { i18n.get_arg("exec_failed", &cmd_name) };
+                                let success = event["success"].as_bool().unwrap_or(false);
+                                let c = if success { i18n.get_arg("exec_success", &cmd_name_c) } else { i18n.get_arg("exec_failed", &cmd_name_c) };
                                 let _ = cmd_clone.edit_response(&http, EditInteractionResponse::new().content(c)).await;
+                                
+                                // If clear was successful, re-send the initial prompt if it exists
+                                if success && cmd_name_c == "clear" {
+                                    if let Some(p) = initial_prompt {
+                                        let _ = pi_c.raw_call(json!({ "type": "prompt", "message": p })).await;
+                                    }
+                                }
                                 break;
                             }
                         }
@@ -414,12 +501,8 @@ fn manage_daemon(action: DaemonAction) -> anyhow::Result<()> {
             fs::create_dir_all(&systemd_dir)?;
             let exe_path = std::env::current_exe()?;
             
-            // Capture critical environment variables from the current user session
-            let path_env = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string());
-            let home_env = std::env::var("HOME").expect("Could not find HOME environment variable");
-            
-            // Try to resolve absolute path for 'pi' to ensure robustness
-            let pi_binary = if let Ok(output) = StdCommand::new("which").arg("pi").output() {
+            // Resolve absolute path for 'pi' to ensure robustness in systemd environment
+            let pi_binary = if let Ok(output) = StdCommand::new("sh").arg("-c").arg("which pi").output() {
                 if output.status.success() {
                     String::from_utf8_lossy(&output.stdout).trim().to_string()
                 } else {
@@ -436,15 +519,14 @@ After=network.target
 [Service]
 Type=simple
 ExecStart={} run
-Environment="PATH={}"
-Environment="HOME={}"
 Environment="PI_BINARY={}"
 Restart=on-failure
 RestartSec=5s
 
 [Install]
 WantedBy=default.target
-"#, exe_path.display(), path_env, home_env, pi_binary);
+"#, exe_path.display(), pi_binary);
+            
             fs::write(&service_file, content)?;
             println!("Created systemd service file at: {}", service_file.display());
             
@@ -454,12 +536,12 @@ WantedBy=default.target
             println!("✅ Service enabled and started!");
         },
         DaemonAction::Disable => {
-            StdCommand::new("systemctl").arg("--user").arg("stop").arg(service_name).status()?;
-            StdCommand::new("systemctl").arg("--user").arg("disable").arg(service_name).status()?;
+            let _ = StdCommand::new("systemctl").arg("--user").arg("stop").arg(service_name).status();
+            let _ = StdCommand::new("systemctl").arg("--user").arg("disable").arg(service_name).status();
             if service_file.exists() {
                 fs::remove_file(service_file)?;
             }
-            StdCommand::new("systemctl").arg("--user").arg("daemon-reload").status()?;
+            let _ = StdCommand::new("systemctl").arg("--user").arg("daemon-reload").status();
             println!("🛑 Service disabled and removed.");
         }
     }
