@@ -34,6 +34,8 @@ enum Commands {
         #[command(subcommand)]
         action: DaemonAction,
     },
+    /// Show version info
+    Version,
 }
 
 #[derive(Subcommand)]
@@ -105,7 +107,9 @@ impl PiInstance {
         };
         fs::create_dir_all(&session_dir)?;
 
-        let mut cmd = Command::new("pi");
+        // Use PI_BINARY env var if set (from daemon), otherwise default to "pi"
+        let pi_binary = std::env::var("PI_BINARY").unwrap_or_else(|_| "pi".to_string());
+        let mut cmd = Command::new(pi_binary);
         cmd.arg("--mode").arg("rpc");
         
         let session_file = session_dir.join(format!("discord-rs-{}.jsonl", channel_id));
@@ -409,6 +413,22 @@ fn manage_daemon(action: DaemonAction) -> anyhow::Result<()> {
         DaemonAction::Enable => {
             fs::create_dir_all(&systemd_dir)?;
             let exe_path = std::env::current_exe()?;
+            
+            // Capture critical environment variables from the current user session
+            let path_env = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string());
+            let home_env = std::env::var("HOME").expect("Could not find HOME environment variable");
+            
+            // Try to resolve absolute path for 'pi' to ensure robustness
+            let pi_binary = if let Ok(output) = StdCommand::new("which").arg("pi").output() {
+                if output.status.success() {
+                    String::from_utf8_lossy(&output.stdout).trim().to_string()
+                } else {
+                    "pi".to_string()
+                }
+            } else {
+                "pi".to_string()
+            };
+
             let content = format!(r#"[Unit]
 Description=Pi Discord RS
 After=network.target
@@ -416,12 +436,15 @@ After=network.target
 [Service]
 Type=simple
 ExecStart={} run
+Environment="PATH={}"
+Environment="HOME={}"
+Environment="PI_BINARY={}"
 Restart=on-failure
 RestartSec=5s
 
 [Install]
 WantedBy=default.target
-"#, exe_path.display());
+"#, exe_path.display(), path_env, home_env, pi_binary);
             fs::write(&service_file, content)?;
             println!("Created systemd service file at: {}", service_file.display());
             
@@ -450,6 +473,9 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::Run) => run_bot().await?,
         Some(Commands::Daemon { action }) => manage_daemon(action)?,
+        Some(Commands::Version) => {
+            println!("discord-rs v{}", env!("CARGO_PKG_VERSION"));
+        },
         None => {
             use clap::CommandFactory;
             Cli::command().print_help()?;

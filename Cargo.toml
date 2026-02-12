@@ -1,6 +1,6 @@
 [package]
 name = "pi-discord-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A high-performance Discord Bot daemon for the pi AI coding agent."
 license = "MIT"
@@ -18,10 +18,10 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 toml = "0.8"
 async-trait = "0.1"
-uuid = { version = "1.0", features = ["v4"] }
-clap = { version = "4.4", features = ["derive"] }
-rust-embed = "8.0"
-directories = "5.0"
+uuid = { version = "1.13", features = ["v4"] }
+clap = { version = "4.5", features = ["derive"] }
+rust-embed = "8.5"
+directories = "6.0"
 
 [[bin]]
 name = "discord-rs"
