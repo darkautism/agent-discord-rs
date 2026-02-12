@@ -12,7 +12,7 @@ use tokio::sync::{Mutex, broadcast, RwLock};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
-use tracing::{info, debug, Level};
+use tracing::{info, Level};
 use std::sync::atomic::{AtomicBool, Ordering};
 use rust_embed::RustEmbed;
 use directories::UserDirs;
