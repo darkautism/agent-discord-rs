@@ -11,6 +11,8 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast, RwLock};
 use std::fs;
 use std::path::PathBuf;
+mod auth;
+use auth::AuthManager;
 use std::time::Duration;
 use tracing::{info, warn, error, Level};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,6 +39,11 @@ enum Commands {
     },
     /// Reload configuration for the running daemon
     Reload,
+    /// Authorize a user or channel using a token
+    Auth {
+        /// The 6-character authentication token
+        token: String,
+    },
     /// Show version info
     Version,
 }
@@ -67,6 +74,7 @@ struct AppState {
     config: Arc<RwLock<Config>>,
     i18n: Arc<RwLock<I18n>>,
     config_path: PathBuf,
+    auth: Arc<AuthManager>,
 }
 
 fn default_lang() -> String { "zh-TW".to_string() }
@@ -387,6 +395,14 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         info!("✅ Connected as {}!", ready.user.name);
         let http = ctx.http.clone();
+        
+        // Cleanup: Clear all guild-specific commands to avoid duplicates with global commands
+        for guild in &ready.guilds {
+            if let Err(e) = guild.id.set_commands(&http, vec![]).await {
+                warn!("Failed to clear commands for guild {}: {}", guild.id, e);
+            }
+        }
+
         let cfg = self.state.config.read().await.clone();
         tokio::spawn(async move {
             let mut model_choices = Vec::new();
@@ -414,7 +430,8 @@ impl EventHandler for Handler {
                 CreateCommand::new("compact").description("Compact history"),
                 CreateCommand::new("clear").description("Clear session"),
                 CreateCommand::new("abort").description("Abort operation"),
-                CreateCommand::new("skill").description("Use a skill").add_option(CreateCommandOption::new(CommandOptionType::String, "name", "Skill").required(true))
+                CreateCommand::new("skill").description("Use a skill").add_option(CreateCommandOption::new(CommandOptionType::String, "name", "Skill").required(true)),
+                CreateCommand::new("mention_only").description("Toggle mention-only mode").add_option(CreateCommandOption::new(CommandOptionType::Boolean, "enable", "Enable?").required(true))
             ];
             let _ = serenity::all::Command::set_global_commands(&http, discord_cmds).await;
         });
@@ -422,6 +439,38 @@ impl EventHandler for Handler {
 
     async fn message(&self, ctx: Context, msg: Message) {
         if msg.author.bot { return; }
+
+        let user_id = msg.author.id.to_string();
+        let channel_id_str = msg.channel_id.to_string();
+        
+        // Check Authorization
+        let (is_auth, mention_only) = self.state.auth.is_authorized(&user_id, &channel_id_str);
+        
+        if !is_auth {
+            let is_dm = msg.guild_id.is_none();
+            let mentioned = msg.mentions_me(&ctx).await.unwrap_or(false);
+            
+            if is_dm || mentioned {
+                match self.state.auth.create_token(
+                    if is_dm { "user" } else { "channel" },
+                    if is_dm { &user_id } else { &channel_id_str }
+                ) {
+                    Ok(token) => {
+                        let _ = msg.reply(&ctx.http, format!("🔒 Authentication required!\nRun this command on your server to authorize:\n`discord-rs auth {}`\n(Expires in 5 mins)", token)).await;
+                    },
+                    Err(e) => {
+                        warn!("Failed to generate auth token: {}", e);
+                    }
+                }
+            }
+            return;
+        }
+
+        // Check Mention Only
+        if mention_only && !msg.mentions_me(&ctx).await.unwrap_or(false) && msg.guild_id.is_some() {
+            return;
+        }
+
         let channel_id = msg.channel_id.get();
         let pi = {
             let instances = self.instances.read().await;
@@ -443,17 +492,57 @@ impl EventHandler for Handler {
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::Command(command) = interaction {
-            let channel_id = command.channel_id.get();
-            let pi = { self.instances.read().await.get(&channel_id).cloned() };
-            if let Some(pi) = pi {
-                let cmd_name = command.data.name.clone();
-                if cmd_name == "abort" {
+            let cmd_name = command.data.name.clone();
+            let channel_id_u64 = command.channel_id.get();
+            info!("🔔 Received slash command: {}", cmd_name);
+
+            // 1. Handle commands that don't need a Pi instance OR handle their own deferring
+            if cmd_name == "abort" {
+                let pi_opt = { self.instances.read().await.get(&channel_id_u64).cloned() };
+                if let Some(pi) = pi_opt {
                     let _ = pi.raw_call(json!({ "type": "abort" })).await;
                     pi.msg_buffer.lock().await.clear();
                     let _ = command.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(self.state.i18n.read().await.get("abort_sent")).ephemeral(true))).await;
-                    return;
+                } else {
+                    let _ = command.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("❌ No active session to abort.").ephemeral(true))).await;
                 }
-                let _ = command.defer_ephemeral(&ctx.http).await;
+                return;
+            }
+
+            // 2. Defer all other commands
+            if let Err(e) = command.defer_ephemeral(&ctx.http).await {
+                error!("❌ Failed to defer interaction for {}: {}", cmd_name, e);
+                return;
+            }
+
+            // 3. Handle commands that work WITHOUT a Pi instance
+            if cmd_name == "mention_only" {
+                let enable = command.data.options.iter().find(|o| o.name == "enable").and_then(|o| o.value.as_bool()).unwrap_or(true);
+                let ch_id = command.channel_id.to_string();
+                let msg = match self.state.auth.set_mention_only(&ch_id, enable) {
+                    Ok(_) => format!("✅ Mention-only mode: **{}**", enable),
+                    Err(_) => "❌ Channel not authorized.".to_string(),
+                };
+                let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().content(msg)).await;
+                return;
+            }
+
+            if cmd_name == "clear" {
+                let mut instances = self.instances.write().await;
+                instances.remove(&channel_id_u64); // Drops instance and kills process
+                
+                let session_file = get_session_dir().join(format!("discord-rs-{}.jsonl", channel_id_u64));
+                if session_file.exists() {
+                    let _ = fs::remove_file(session_file);
+                }
+                
+                let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().content(self.state.i18n.read().await.get_arg("exec_success", "clear"))).await;
+                return;
+            }
+
+            // 4. Handle commands that REQUIRE a Pi instance
+            let pi_opt = { self.instances.read().await.get(&channel_id_u64).cloned() };
+            if let Some(pi) = pi_opt {
                 let req_id = match cmd_name.as_str() {
                     "model" => {
                         let id_val = command.data.options.iter().find(|o| o.name == "id").and_then(|o| o.value.as_str()).unwrap_or("");
@@ -464,19 +553,6 @@ impl EventHandler for Handler {
                         Some(pi.raw_call(json!({ "type": "set_thinking_level", "level": lvl })).await.unwrap())
                     }
                     "compact" => Some(pi.raw_call(json!({ "type": "compact" })).await.unwrap()),
-                    "clear" => {
-                        // HARD CLEAR: Drop instance and delete file
-                        let mut instances = self.instances.write().await;
-                        instances.remove(&channel_id); // This drops the instance and kills the 'pi' process
-                        
-                        let session_file = get_session_dir().join(format!("discord-rs-{}.jsonl", channel_id));
-                        if session_file.exists() {
-                            let _ = fs::remove_file(session_file);
-                        }
-                        
-                        let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().content(self.state.i18n.read().await.get_arg("exec_success", "clear"))).await;
-                        return;
-                    }
                     "skill" => {
                         let n = command.data.options.iter().find(|o| o.name == "name").and_then(|o| o.value.as_str()).unwrap_or("");
                         pi.msg_buffer.lock().await.push(format!("/skill:{}", n));
@@ -486,6 +562,7 @@ impl EventHandler for Handler {
                     }
                     _ => None,
                 };
+
                 if let Some(rid) = req_id {
                     let mut rx = pi.event_tx.subscribe();
                     let http = ctx.http.clone();
@@ -513,6 +590,8 @@ impl EventHandler for Handler {
                         }
                     });
                 }
+            } else {
+                let _ = command.edit_response(&ctx.http, EditInteractionResponse::new().content("❌ No active session in this channel. Send a message first.")).await;
             }
         }
     }
@@ -548,7 +627,8 @@ language = "zh-TW"
     
     let i18n = Arc::new(RwLock::new(I18n::new(&config.language)));
     let config = Arc::new(RwLock::new(config));
-    let state = AppState { config: config.clone(), i18n: i18n.clone(), config_path: config_path.clone() };
+    let auth = Arc::new(AuthManager::new());
+    let state = AppState { config: config.clone(), i18n: i18n.clone(), config_path: config_path.clone(), auth: auth.clone() };
     
     // Spawn signal handler
     let state_c = state.clone();
@@ -593,7 +673,7 @@ language = "zh-TW"
 
     let handler = Handler { instances: Arc::new(RwLock::new(HashMap::new())), state: state.clone() };
     let token = state.config.read().await.discord_token.clone();
-    let mut client = Client::builder(&token, GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT | GatewayIntents::GUILDS).event_handler(handler).await?;
+    let mut client = Client::builder(&token, GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT | GatewayIntents::GUILDS | GatewayIntents::DIRECT_MESSAGES).event_handler(handler).await?;
     client.start().await?;
     Ok(())
 }
@@ -668,6 +748,15 @@ async fn main() -> anyhow::Result<()> {
             match res {
                 Ok(status) if status.success() => println!("✅ Reload signal sent successfully."),
                 _ => eprintln!("❌ Failed to send reload signal. Is the daemon running?"),
+            }
+        }
+        Some(Commands::Auth { token }) => {
+            let manager = AuthManager::new();
+            match manager.redeem_token(&token) {
+                Ok((type_, id)) => {
+                    println!("✅ Successfully authorized {} {}.", type_, id);
+                },
+                Err(e) => eprintln!("❌ Authorization failed: {}", e),
             }
         }
         Some(Commands::Version) => {
