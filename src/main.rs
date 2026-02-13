@@ -708,24 +708,20 @@ fn manage_daemon(action: DaemonAction) -> anyhow::Result<()> {
                 "pi".to_string()
             };
 
-            // Capture current PATH to ensure 'node' and other tools can be found in systemd
-            let current_path = std::env::var("PATH").unwrap_or_default();
-
             let content = format!(r#"[Unit]
 Description=Pi Discord RS
 After=network.target
 
 [Service]
 Type=simple
-ExecStart={} run
+ExecStart=/bin/bash -lc "{} run"
 Environment="PI_BINARY={}"
-Environment="PATH={}"
 Restart=on-failure
 RestartSec=5s
 
 [Install]
 WantedBy=default.target
-"#, exe_path.display(), pi_binary, current_path);
+"#, exe_path.display(), pi_binary);
             
             fs::write(&service_file, content)?;
             println!("Created systemd service file at: {}", service_file.display());
