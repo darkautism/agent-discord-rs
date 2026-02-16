@@ -6,7 +6,6 @@ pub enum BlockType {
     Text,
     ToolCall,
     ToolOutput,
-    Status,
 }
 
 #[derive(Debug, Clone)]
@@ -82,13 +81,6 @@ impl Block {
                 };
                 format!("```\n{}\n```", final_truncated)
             }
-            BlockType::Status => {
-                if self.content.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!("*{}*", self.content)
-                }
-            }
         };
         res.trim_end().to_string()
     }
@@ -118,15 +110,29 @@ impl EmbedComposer {
             .push_back(Block::with_id(block_type, content, id.to_string()));
     }
 
-    pub fn push_delta(&mut self, block_type: BlockType, delta: &str) {
-        if let Some(last) = self.blocks.back_mut() {
-            if last.block_type == block_type {
-                last.content.push_str(delta);
-                return;
+    pub fn push_delta(&mut self, id: Option<String>, block_type: BlockType, delta: &str) {
+        if let Some(ref id_str) = id {
+            for block in self.blocks.iter_mut() {
+                if block.id.as_deref() == Some(id_str) && block.block_type == block_type {
+                    block.content.push_str(delta);
+                    return;
+                }
             }
+            self.blocks.push_back(Block::with_id(
+                block_type,
+                delta.to_string(),
+                id_str.clone(),
+            ));
+        } else {
+            if let Some(last) = self.blocks.back_mut() {
+                if last.block_type == block_type && last.id.is_none() {
+                    last.content.push_str(delta);
+                    return;
+                }
+            }
+            self.blocks
+                .push_back(Block::new(block_type, delta.to_string()));
         }
-        self.blocks
-            .push_back(Block::new(block_type, delta.to_string()));
     }
 
     pub fn set_tool_call(&mut self, id: String, label: String) {
@@ -320,7 +326,7 @@ mod tests {
     fn test_ultimate_regression() {
         let mut comp = EmbedComposer::new(4000);
         // 1. 初始狀態
-        comp.push_delta(BlockType::Text, "Initial User Query".into());
+        comp.push_delta(None, BlockType::Text, "Initial User Query");
         comp.set_tool_call("ID-1".into(), "🛠️ tool_calc".into());
 
         // 2. 模擬後端同步
@@ -354,7 +360,7 @@ mod tests {
     #[test]
     fn test_stable_interleaving_sync() {
         let mut comp = EmbedComposer::new(4000);
-        comp.push_delta(BlockType::Text, "A".into());
+        comp.push_delta(None, BlockType::Text, "A");
         comp.set_tool_call("ID-1".into(), "B".into());
 
         // 模擬同步：後端回傳 [A, C] (C 是最新的總結)
@@ -378,7 +384,7 @@ mod tests {
     #[test]
     fn test_sync_with_delayed_backend_preserves_local_tool() {
         let mut comp = EmbedComposer::new(4000);
-        comp.push_delta(BlockType::Text, "User query".into());
+        comp.push_delta(None, BlockType::Text, "User query");
 
         comp.set_tool_call("ID-99".into(), "🛠️ bash".into());
         comp.update_block_by_id("ID-99", BlockType::ToolOutput, "Processing...".into());
@@ -395,9 +401,9 @@ mod tests {
     #[test]
     fn test_multi_text_block_index_alignment() {
         let mut comp = EmbedComposer::new(4000);
-        comp.push_delta(BlockType::Text, "Block 1 full content".into());
+        comp.push_delta(None, BlockType::Text, "Block 1 full content");
         comp.set_tool_call("ID-1".into(), "🛠️ ls".into());
-        comp.push_delta(BlockType::Text, "Block 2 progress...".into());
+        comp.push_delta(None, BlockType::Text, "Block 2 progress...");
 
         let sync_data = vec![
             Block::new(BlockType::Text, "Block 1 full content".into()),
@@ -444,7 +450,7 @@ mod tests {
     fn test_sync_none_id_collision_prevention() {
         let mut comp = EmbedComposer::new(4000);
         // 本地：1個無ID文字塊，1個帶ID工具塊
-        comp.push_delta(BlockType::Text, "Base".into());
+        comp.push_delta(None, BlockType::Text, "Base");
         comp.set_tool_call("ID-99".into(), "🛠️ bash".into());
 
         // 模擬後端同步：只發送無ID文字塊

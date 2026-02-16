@@ -311,7 +311,17 @@ impl KiloAgent {
                 let mut buf = self.pending_trace.lock().await;
                 if delta.contains('→') || delta.contains("🛠️") || !buf.is_empty() {
                     buf.push_str(delta);
-                    if delta.contains('\n') && !buf.starts_with('→') {
+
+                    // 安全閥：如果軌跡過長（> 200 字），不再攔截，直接噴出
+                    if buf.len() > 200 {
+                        let content = buf.split_off(0);
+                        let _ = self.event_tx.send(AgentEvent::MessageUpdate {
+                            thinking: "".into(),
+                            text: content,
+                            is_delta: true,
+                            id: None,
+                        });
+                    } else if delta.contains('\n') && !buf.starts_with('→') {
                         let content = buf.split_off(0);
                         let _ = self.event_tx.send(AgentEvent::MessageUpdate {
                             thinking: "".into(),
@@ -495,7 +505,8 @@ impl KiloAgent {
                                                 }
                                             }
                                         }
-                                        let _ = agent_tx_clone.send(AgentEvent::ContentSync { items });
+                                        let _ =
+                                            agent_tx_clone.send(AgentEvent::ContentSync { items });
                                     }
                                 }
                             }
@@ -531,11 +542,17 @@ impl KiloAgent {
                         .unwrap_or("tool-id")
                         .to_string();
                     let mut buf = self.pending_trace.lock().await;
-                    let name = if !buf.is_empty() {
+                    let mut name = if !buf.is_empty() {
                         buf.split_off(0)
                     } else {
                         "tool".into()
                     };
+
+                    // 標題長度限縮：防止過長軌跡撐爆 Discord Embed
+                    if name.chars().count() > 100 {
+                        name = format!("{}...", name.chars().take(97).collect::<String>());
+                    }
+
                     let _ = self
                         .event_tx
                         .send(AgentEvent::ToolExecutionStart { id, name });

@@ -109,5 +109,4 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         sessions.remove(&channel_id);
     }
-
 }

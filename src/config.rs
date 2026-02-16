@@ -67,5 +67,4 @@ port = 4096
         let config: Config = toml::from_str(&content)?;
         Ok(config)
     }
-
 }

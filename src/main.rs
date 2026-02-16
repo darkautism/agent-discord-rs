@@ -9,7 +9,7 @@ use serenity::async_trait;
 use serenity::Client;
 use std::process::Command as StdCommand;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{error, info, Level};
 
 mod agent;
@@ -145,12 +145,11 @@ impl Handler {
         initial_message: Option<String>,
         is_brand_new: bool,
     ) {
-        let mut rx = agent.subscribe_events();
         let i18n = state.i18n.read().await;
         let processing_msg = i18n.get("processing");
         drop(i18n);
 
-        let mut discord_msg = match channel_id
+        let discord_msg = match channel_id
             .send_message(
                 &http,
                 CreateMessage::new()
@@ -165,8 +164,8 @@ impl Handler {
             }
         };
 
-        let mut composer = EmbedComposer::new(3900);
-        let mut status = ExecStatus::Running;
+        let composer: Arc<Mutex<EmbedComposer>> = Arc::new(Mutex::new(EmbedComposer::new(3900)));
+        let status: Arc<Mutex<ExecStatus>> = Arc::new(Mutex::new(ExecStatus::Running));
 
         if let Some(msg) = initial_message {
             let mut final_msg = msg;
@@ -176,119 +175,51 @@ impl Handler {
                     final_msg = format!("{}\n\n{}", prompts, final_msg);
                 }
             }
-            if let Err(e) = agent.prompt(&final_msg).await {
-                status = ExecStatus::Error(e.to_string());
-            }
-        }
-
-        if status == ExecStatus::Running {
-            let mut last_upd = std::time::Instant::now();
-
-            let typing_http = http.clone();
-            let typing_task = tokio::spawn(async move {
-                loop {
-                    let _ = channel_id.broadcast_typing(&typing_http).await;
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let agent_for_prompt = Arc::clone(&agent);
+            let status_for_prompt = Arc::clone(&status);
+            tokio::spawn(async move {
+                if let Err(e) = agent_for_prompt.prompt(&final_msg).await {
+                    let mut s = status_for_prompt.lock().await;
+                    *s = ExecStatus::Error(e.to_string());
                 }
             });
+        }
 
-            while let Ok(event) = rx.recv().await {
-                match event {
-                    AgentEvent::MessageUpdate {
-                        thinking: t,
-                        text: txt,
-                        is_delta,
-                        id,
-                    } => {
-                        if is_delta {
-                            if !t.is_empty() {
-                                composer.push_delta(BlockType::Thinking, &t);
-                            }
-                            if !txt.is_empty() {
-                                composer.push_delta(BlockType::Text, &txt);
-                            }
-                        } else {
-                            // 如果有 ID，精準更新；否則使用默認 ID
-                            let think_id = id.as_deref().unwrap_or("sync-thinking");
-                            let text_id = id.as_deref().unwrap_or("sync-text");
+        let typing_http = http.clone();
+        let typing_task = tokio::spawn(async move {
+            loop {
+                let _ = channel_id.broadcast_typing(&typing_http).await;
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        });
 
-                            if !t.is_empty() {
-                                composer.update_block_by_id(think_id, BlockType::Thinking, t);
-                            }
-                            if !txt.is_empty() {
-                                composer.update_block_by_id(text_id, BlockType::Text, txt);
-                            }
-                        }
-                    }
-                    AgentEvent::ContentSync { items } => {
-                        let mapped = items
-                            .into_iter()
-                            .map(|i| {
-                                match i.type_ {
-                                    ContentType::Thinking => {
-                                        Block::new(BlockType::Thinking, i.content)
-                                    }
-                                    ContentType::Text => Block::new(BlockType::Text, i.content),
-                                    ContentType::ToolCall(n) => {
-                                        // 如果名稱已經包含 Emoji，就不再重複添加
-                                        let label = if n.contains("🛠️") {
-                                            n.to_string()
-                                        } else {
-                                            format!("🛠️ `{}`", n)
-                                        };
-                                        Block::with_label(BlockType::ToolCall, label, i.id)
-                                    }
-                                    ContentType::ToolOutput => {
-                                        let mut b = Block::new(BlockType::ToolOutput, i.content);
-                                        b.id = i.id;
-                                        b
-                                    }
-                                }
-                            })
-                            .collect();
-                        composer.sync_content(mapped);
-                    }
-                    AgentEvent::ToolExecutionStart { id, name } => {
-                        let label = format!("🛠️ `{}`", name);
-                        composer.set_tool_call(id, label);
-                    }
-                    AgentEvent::ToolExecutionUpdate { id, output } => {
-                        composer.update_block_by_id(&id, BlockType::ToolOutput, output);
-                    }
-                    AgentEvent::AutoRetry { attempt, max } => {
-                        composer.push_delta(
-                            BlockType::Status,
-                            &format!("🔄 **自動重試 ({}/{})** - API 暫時限制中...", attempt, max),
-                        );
-                        last_upd = std::time::Instant::now() - std::time::Duration::from_secs(10);
-                    }
-                    AgentEvent::AgentEnd { success, error } => {
-                        status = if success {
-                            ExecStatus::Success
-                        } else {
-                            ExecStatus::Error(error.unwrap_or_else(|| "Error".to_string()))
-                        };
-                    }
-                    AgentEvent::Error { message } => {
-                        // 這裡如果是 Kilo 背景錯誤已經被過濾了
-                        // 其他嚴重錯誤則轉化為狀態，不直接推送到 Status 塊以免重複
-                        status = ExecStatus::Error(message);
-                    }
-                    _ => {}
-                }
+        // --- 任務 A: Render 循環 (心跳更新 Discord) ---
+        let render_status = Arc::clone(&status);
+        let render_composer = Arc::clone(&composer);
+        let render_http = http.clone();
+        let mut render_msg = discord_msg.clone();
+        let render_i18n = Arc::clone(&state.i18n);
+        let render_channel_id = channel_id;
 
-                if last_upd.elapsed() >= std::time::Duration::from_millis(1500)
-                    || status != ExecStatus::Running
-                {
+        let render_task = tokio::spawn(async move {
+            let mut last_content = String::new();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+                let (current_status, desc) = {
+                    // 統一鎖定順序：先 Composer 後 Status，防止死鎖
+                    let c = render_composer.lock().await;
+                    let s = render_status.lock().await;
+                    (s.clone(), c.render())
+                };
+
+                // 只有在內容有變動或是結束時才 Edit
+                if desc != last_content || current_status != ExecStatus::Running {
                     let mut embed = CreateEmbed::new();
-                    let i18n = state.i18n.read().await;
-                    let desc = composer.render();
+                    let i18n = render_i18n.read().await;
 
-                    info!("📢 [FINAL-EMBED-{}]:\n{}\n---", channel_id, desc);
-
-                    match &status {
+                    match &current_status {
                         ExecStatus::Error(e) => {
-                            // 如果有渲染內容，保留內容並在下方附帶錯誤
                             embed = embed
                                 .title(i18n.get("api_error"))
                                 .color(0xff0000)
@@ -301,7 +232,7 @@ impl Handler {
                                 .description(if desc.is_empty() {
                                     i18n.get("done")
                                 } else {
-                                    desc
+                                    desc.clone()
                                 });
                         }
                         ExecStatus::Running => {
@@ -311,35 +242,141 @@ impl Handler {
                                 .description(if desc.is_empty() {
                                     i18n.get("wait")
                                 } else {
-                                    desc
+                                    desc.clone()
                                 });
                         }
                     }
-                    let _ = discord_msg
-                        .edit(&http, EditMessage::new().embed(embed))
-                        .await;
-                    last_upd = std::time::Instant::now();
-                    if status != ExecStatus::Running {
-                        typing_task.abort();
-                        break;
+
+                    if let Err(e) = render_msg
+                        .edit(&render_http, EditMessage::new().embed(embed))
+                        .await
+                    {
+                        error!("❌ Render failed to edit message: {}", e);
+                    } else {
+                        info!(
+                            "📢 [EMBED-UPDATE-{}]: status={:?}, len={}",
+                            render_channel_id,
+                            current_status,
+                            desc.len()
+                        );
+                        last_content = desc;
                     }
                 }
+
+                if current_status != ExecStatus::Running {
+                    break;
+                }
             }
-            typing_task.abort();
-        } else {
-            // 如果 status 在進入 loop 前就已經是 Error
-            let mut embed = CreateEmbed::new();
-            let i18n = state.i18n.read().await;
-            if let ExecStatus::Error(e) = status {
-                embed = embed
-                    .title(i18n.get("api_error"))
-                    .color(0xff0000)
-                    .description(format!("❌ **錯誤:** {}", e));
-                let _ = discord_msg
-                    .edit(&http, EditMessage::new().embed(embed))
-                    .await;
+        });
+
+        // --- 任務 B: Writer 任務 (極速吸收事件) ---
+        let mut rx = agent.subscribe_events();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        let mut comp = composer.lock().await;
+                        let mut s = status.lock().await;
+
+                        match event {
+                            AgentEvent::MessageUpdate {
+                                thinking: t,
+                                text: txt,
+                                is_delta,
+                                id,
+                            } => {
+                                if is_delta {
+                                    if !t.is_empty() {
+                                        comp.push_delta(id.clone(), BlockType::Thinking, &t);
+                                    }
+                                    if !txt.is_empty() {
+                                        comp.push_delta(id, BlockType::Text, &txt);
+                                    }
+                                } else {
+                                    let think_id = id.as_deref().unwrap_or("sync-thinking");
+                                    let text_id = id.as_deref().unwrap_or("sync-text");
+                                    if !t.is_empty() {
+                                        comp.update_block_by_id(think_id, BlockType::Thinking, t);
+                                    }
+                                    if !txt.is_empty() {
+                                        comp.update_block_by_id(text_id, BlockType::Text, txt);
+                                    }
+                                }
+                            }
+                            AgentEvent::ContentSync { items } => {
+                                let mapped = items
+                                    .into_iter()
+                                    .map(|i| {
+                                        match i.type_ {
+                                            ContentType::Thinking => {
+                                                Block::new(BlockType::Thinking, i.content)
+                                            }
+                                            ContentType::Text => {
+                                                Block::new(BlockType::Text, i.content)
+                                            }
+                                            ContentType::ToolCall(n) => {
+                                                // 統一標題格式：確保都有 Emoji 與代碼塊樣式
+                                                let label = if n.contains("🛠️") {
+                                                    n.to_string()
+                                                } else {
+                                                    format!("🛠️ `{}`", n)
+                                                };
+                                                Block::with_label(BlockType::ToolCall, label, i.id)
+                                            }
+                                            ContentType::ToolOutput => {
+                                                let mut b =
+                                                    Block::new(BlockType::ToolOutput, i.content);
+                                                b.id = i.id;
+                                                b
+                                            }
+                                        }
+                                    })
+                                    .collect();
+                                comp.sync_content(mapped);
+                            }
+                            AgentEvent::ToolExecutionStart { id, name } => {
+                                let label = if name.contains("🛠️") {
+                                    name
+                                } else {
+                                    format!("🛠️ `{}`", name)
+                                };
+                                comp.set_tool_call(id, label);
+                            }
+                            AgentEvent::ToolExecutionUpdate { id, output } => {
+                                comp.update_block_by_id(&id, BlockType::ToolOutput, output);
+                            }
+                            AgentEvent::AgentEnd { success, error } => {
+                                *s = if success {
+                                    ExecStatus::Success
+                                } else {
+                                    ExecStatus::Error(error.unwrap_or_else(|| "Error".to_string()))
+                                };
+                            }
+                            AgentEvent::Error { message } => {
+                                *s = ExecStatus::Error(message);
+                            }
+                            _ => {}
+                        }
+
+                        let is_running = *s == ExecStatus::Running;
+                        drop(comp);
+                        drop(s);
+                        if !is_running {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        info!("⚠️ Writer lagged by {} messages, skipping old events...", n);
+                        continue;
+                    }
+                    Err(_) => break,
+                }
+                tokio::task::yield_now().await;
             }
-        }
+        });
+
+        let _ = render_task.await;
+        typing_task.abort();
     }
 }
 

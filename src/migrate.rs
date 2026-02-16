@@ -294,7 +294,6 @@ pub fn get_config_path() -> PathBuf {
     get_base_dir().join("config.toml")
 }
 
-
 pub fn get_channel_config_path() -> PathBuf {
     get_base_dir().join("channel_config.json")
 }
