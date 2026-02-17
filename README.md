@@ -21,19 +21,57 @@ A high-performance Discord Bot daemon developed in Rust, designed to bridge and 
 
 ## Deployment
 
-### Build
+### Prerequisites
+
+1.  **Rust Toolchain**: Install via [rust-lang.org](https://www.rust-lang.org/tools/install).
+2.  **Discord Bot Token**:
+    -   Create an application at the [Discord Developer Portal](https://discord.com/developers/applications).
+    -   Under **Bot**, enable the following **Privileged Gateway Intents**:
+        -   `Presence Intent` (Optional)
+        -   `Server Members Intent`
+        -   `Message Content Intent` (Required)
+3.  **AI Backends**: Install at least one of the following:
+    -   **Pi**: [github.com/mariozechner/pi-coding-agent](https://github.com/mariozechner/pi-coding-agent)
+    -   **OpenCode**: `npm install -g @opencode-ai/cli`
+    -   **Kilo**: `npm install -g @kilocode/cli`
+
+### Installation
+
+Install via [crates.io](https://crates.io/crates/agent-discord-rs):
 ```bash
-cargo build --release
+cargo install agent-discord-rs
 ```
 
-### Authentication & Authorization
+Or build from source:
 ```bash
-./target/release/agent-discord auth <TOKEN>
+git clone https://github.com/darkautism/pi-discord-rs.git
+cd pi-discord-rs
+cargo install --path .
 ```
 
-### Start Daemon
+### Initial Setup
+
+1.  **Generate Config**: Run the bot for the first time to create the default config directory:
+    ```bash
+    agent-discord run
+    ```
+2.  **Edit Config**: Locate `config.toml` (typically in `~/.config/agent-discord-rs/config.toml`) and paste your `discord_token`.
+3.  **Authentication**:
+    -   Invite the bot to your server.
+    -   **Mention (@) the bot in a channel** to trigger the authentication prompt.
+    -   Follow the instructions and run:
+      ```bash
+      agent-discord auth <TOKEN_FROM_DISCORD>
+      ```
+
+### Running the Bot
+
 ```bash
-./target/release/agent-discord run
+# Start the bot
+agent-discord run
+
+# Background daemon (Linux/Systemd)
+agent-discord daemon enable
 ```
 
 ## Acknowledgments
@@ -46,12 +84,4 @@ This project relies on the following backends for its AI capabilities. Special t
 
 ## License
 
-This project is licensed under the **MIT License**.
-
-Copyright (c) 2026 kautism
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
