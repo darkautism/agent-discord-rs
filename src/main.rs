@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error, info, Level};
 
+mod cron;
 mod i18n;
 
 mod agent;
@@ -25,6 +26,7 @@ use auth::AuthManager;
 use commands::agent::{handle_button, ChannelConfig};
 use composer::{Block, BlockType, EmbedComposer};
 use config::Config;
+use cron::CronManager;
 use i18n::I18n;
 use session::SessionManager;
 
@@ -66,6 +68,7 @@ pub struct AppState {
     pub auth: Arc<AuthManager>,
     pub i18n: Arc<RwLock<I18n>>,
     pub backend_manager: Arc<agent::manager::BackendManager>,
+    pub cron_manager: Arc<CronManager>,
 }
 
 fn load_all_prompts() -> String {
@@ -518,12 +521,15 @@ impl EventHandler for Handler {
 async fn run_bot() -> anyhow::Result<()> {
     migrate::run_migrations().await?;
     let config = Arc::new(Config::load().await?);
+    let cron_manager = Arc::new(CronManager::new().await?);
+    cron_manager.load_from_disk().await.ok(); // Ignore error if file doesn't exist yet
     let state = AppState {
         config: config.clone(),
         session_manager: Arc::new(SessionManager::new(config.clone())),
         auth: Arc::new(AuthManager::new()),
         i18n: Arc::new(RwLock::new(I18n::new(&config.language))),
         backend_manager: Arc::new(agent::manager::BackendManager::new(config.clone())),
+        cron_manager,
     };
     let mut client = Client::builder(
         &state.config.discord_token,
