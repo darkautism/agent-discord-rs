@@ -2,15 +2,16 @@ use agent::{AgentEvent, AiAgent, ContentType};
 use clap::{Parser, Subcommand};
 use rust_embed::RustEmbed;
 use serenity::all::{
-    Context, CreateEmbed, CreateMessage, EditMessage, EventHandler,
-    GatewayIntents, Interaction, Message, Ready,
+    Context, CreateEmbed, CreateMessage, EditMessage, EventHandler, GatewayIntents, Interaction,
+    Message, Ready,
 };
 use serenity::async_trait;
 use serenity::Client;
-use std::process::Command as StdCommand;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error, info, Level};
+
+mod i18n;
 
 mod agent;
 mod auth;
@@ -24,6 +25,7 @@ use auth::AuthManager;
 use commands::agent::{handle_button, ChannelConfig};
 use composer::{Block, BlockType, EmbedComposer};
 use config::Config;
+use i18n::I18n;
 use session::SessionManager;
 
 #[derive(Parser)]
@@ -54,47 +56,16 @@ enum DaemonAction {
 }
 
 #[derive(RustEmbed)]
-#[folder = "locales/"]
-struct Asset;
-
-#[derive(RustEmbed)]
 #[folder = "prompts/"]
 struct DefaultPrompts;
 
 #[derive(Clone)]
-struct AppState {
-    config: Arc<Config>,
-    session_manager: Arc<SessionManager>,
-    auth: Arc<AuthManager>,
-    i18n: Arc<RwLock<I18n>>,
-    backend_manager: Arc<agent::manager::BackendManager>,
-}
-
-struct I18n {
-    texts: serde_json::Value,
-}
-
-impl I18n {
-    fn new(lang: &str) -> Self {
-        let path = format!("{}.json", lang);
-        let content = if let Some(file) = Asset::get(&path) {
-            std::str::from_utf8(file.data.as_ref())
-                .expect("UTF-8")
-                .to_string()
-        } else {
-            r#"{"processing": "...", "wait": "..."}"#.to_string()
-        };
-        I18n {
-            texts: serde_json::from_str(&content).expect("JSON"),
-        }
-    }
-    fn get(&self, key: &str) -> String {
-        self.texts
-            .get(key)
-            .and_then(|v| v.as_str())
-            .unwrap_or(key)
-            .to_string()
-    }
+pub struct AppState {
+    pub config: Arc<Config>,
+    pub session_manager: Arc<SessionManager>,
+    pub auth: Arc<AuthManager>,
+    pub i18n: Arc<RwLock<I18n>>,
+    pub backend_manager: Arc<agent::manager::BackendManager>,
 }
 
 fn load_all_prompts() -> String {
@@ -183,7 +154,7 @@ impl Handler {
                 if let Err(e) = agent_for_prompt.prompt(&final_msg).await {
                     let mut s = status_for_prompt.lock().await;
                     let comp = composer_for_prompt.lock().await;
-                    
+
                     // [核心修復]: 只有在目前還是 Running 且 Composer 完全沒收到內容時才設置 Error。
                     // 如果 Composer 已經有內容，代表後端已經收到請求並在透過 SSE 吐字，
                     // 此時 POST 的超時或失敗只是網路層的抖動，不應終止渲染。
@@ -300,26 +271,48 @@ impl Handler {
                                 id,
                             } => {
                                 if is_delta {
-                                    if !t.is_empty() { comp.push_delta(id.clone(), BlockType::Thinking, &t); }
-                                    if !txt.is_empty() { comp.push_delta(id, BlockType::Text, &txt); }
+                                    if !t.is_empty() {
+                                        comp.push_delta(id.clone(), BlockType::Thinking, &t);
+                                    }
+                                    if !txt.is_empty() {
+                                        comp.push_delta(id, BlockType::Text, &txt);
+                                    }
                                 } else {
-                                    if !t.is_empty() { comp.update_block_by_id(&id.clone().unwrap_or_else(|| "think".into()), BlockType::Thinking, t); }
-                                    if !txt.is_empty() { comp.update_block_by_id(&id.unwrap_or_else(|| "text".into()), BlockType::Text, txt); }
+                                    if !t.is_empty() {
+                                        comp.update_block_by_id(
+                                            &id.clone().unwrap_or_else(|| "think".into()),
+                                            BlockType::Thinking,
+                                            t,
+                                        );
+                                    }
+                                    if !txt.is_empty() {
+                                        comp.update_block_by_id(
+                                            &id.unwrap_or_else(|| "text".into()),
+                                            BlockType::Text,
+                                            txt,
+                                        );
+                                    }
                                 }
                             }
                             AgentEvent::ContentSync { items } => {
-                                let mapped = items.into_iter().map(|i| {
-                                    match i.type_ {
-                                        ContentType::Thinking => Block::new(BlockType::Thinking, i.content),
+                                let mapped = items
+                                    .into_iter()
+                                    .map(|i| match i.type_ {
+                                        ContentType::Thinking => {
+                                            Block::new(BlockType::Thinking, i.content)
+                                        }
                                         ContentType::Text => Block::new(BlockType::Text, i.content),
-                                        ContentType::ToolCall(n) => Block::with_label(BlockType::ToolCall, n, i.id),
+                                        ContentType::ToolCall(n) => {
+                                            Block::with_label(BlockType::ToolCall, n, i.id)
+                                        }
                                         ContentType::ToolOutput => {
-                                            let mut b = Block::new(BlockType::ToolOutput, i.content);
+                                            let mut b =
+                                                Block::new(BlockType::ToolOutput, i.content);
                                             b.id = i.id;
                                             b
                                         }
-                                    }
-                                }).collect();
+                                    })
+                                    .collect();
                                 comp.sync_content(mapped);
                             }
                             AgentEvent::ToolExecutionStart { id, name } => {
@@ -329,7 +322,11 @@ impl Handler {
                                 comp.update_block_by_id(&id, BlockType::ToolOutput, output);
                             }
                             AgentEvent::AgentEnd { success, error } => {
-                                *s = if success { ExecStatus::Success } else { ExecStatus::Error(error.unwrap_or_else(|| "Error".to_string())) };
+                                *s = if success {
+                                    ExecStatus::Success
+                                } else {
+                                    ExecStatus::Error(error.unwrap_or_else(|| "Error".to_string()))
+                                };
                             }
                             AgentEvent::Error { message } => {
                                 *s = ExecStatus::Error(message);
@@ -340,7 +337,9 @@ impl Handler {
                         let finished = *s != ExecStatus::Running;
                         drop(comp);
                         drop(s);
-                        if finished { break; }
+                        if finished {
+                            break;
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         info!("⚠️ Writer lagged by {} messages", n);
@@ -360,32 +359,54 @@ impl Handler {
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
-        info!("✅ Connected as {}! (ID: {})", ready.user.name, ready.user.id);
+        info!(
+            "✅ Connected as {}! (ID: {})",
+            ready.user.name, ready.user.id
+        );
         info!("🔑 Guilds count: {}", ready.guilds.len());
 
         // 偵測指令註冊
         for guild in &ready.guilds {
-            info!("🏰 Guild: id={}, unavailable={}", guild.id, guild.unavailable);
+            info!(
+                "🏰 Guild: id={}, unavailable={}",
+                guild.id, guild.unavailable
+            );
         }
 
-        let commands = commands::get_all_commands().into_iter().map(|cmd| cmd.create_command()).collect::<Vec<_>>();
+        let i18n = self.state.i18n.read().await;
+        let commands = commands::get_all_commands()
+            .into_iter()
+            .map(|cmd| cmd.create_command(&i18n))
+            .collect::<Vec<_>>();
+        drop(i18n);
+
         match serenity::all::Command::set_global_commands(&ctx.http, commands).await {
             Ok(_) => info!("✅ Registered global commands"),
             Err(e) => error!("❌ Failed to register commands: {}", e),
         }
     }
 
-    async fn guild_create(&self, _ctx: Context, guild: serenity::model::guild::Guild, is_new: Option<bool>) {
-        info!("🏰 Guild Available: name={}, id={}, is_new={:?}", guild.name, guild.id, is_new);
+    async fn guild_create(
+        &self,
+        _ctx: Context,
+        guild: serenity::model::guild::Guild,
+        is_new: Option<bool>,
+    ) {
+        info!(
+            "🏰 Guild Available: name={}, id={}, is_new={:?}",
+            guild.name, guild.id, is_new
+        );
         for (id, channel) in &guild.channels {
             debug!("📺 Channel: name={}, id={}", channel.name, id);
         }
     }
 
     async fn message(&self, ctx: Context, msg: Message) {
-        if msg.author.bot { return; }
+        if msg.author.bot {
+            return;
+        }
         info!("📩 Message from {}: {}", msg.author.name, msg.content);
-        
+
         let user_id = msg.author.id.to_string();
         let channel_id_str = msg.channel_id.to_string();
         let (is_auth, mention_only) = self.state.auth.is_authorized(&user_id, &channel_id_str);
@@ -393,22 +414,41 @@ impl EventHandler for Handler {
         if !is_auth {
             if msg.mentions_me(&ctx).await.unwrap_or(false) {
                 if let Ok(token) = self.state.auth.create_token("channel", &channel_id_str) {
-                    let _ = msg.reply(&ctx.http, format!("🔒 需要認證！\n`agent-discord auth {}`", token)).await;
+                    let _ = msg
+                        .reply(
+                            &ctx.http,
+                            format!("🔒 需要認證！\n`agent-discord auth {}`", token),
+                        )
+                        .await;
                 }
             }
             return;
         }
-        
-        if mention_only && !msg.mentions_me(&ctx).await.unwrap_or(false) { return; }
+
+        if mention_only && !msg.mentions_me(&ctx).await.unwrap_or(false) {
+            return;
+        }
 
         let channel_config = ChannelConfig::load().await.unwrap_or_default();
         let agent_type = channel_config.get_agent_type(&channel_id_str);
-        
+
         let state = self.state.clone();
         tokio::spawn(async move {
-            match state.session_manager.get_or_create_session(msg.channel_id.get(), agent_type, &state.backend_manager).await {
+            match state
+                .session_manager
+                .get_or_create_session(msg.channel_id.get(), agent_type, &state.backend_manager)
+                .await
+            {
                 Ok((agent, is_new)) => {
-                    Handler::start_agent_loop(agent, ctx.http.clone(), msg.channel_id, state, Some(msg.content), is_new).await;
+                    Handler::start_agent_loop(
+                        agent,
+                        ctx.http.clone(),
+                        msg.channel_id,
+                        state,
+                        Some(msg.content),
+                        is_new,
+                    )
+                    .await;
                 }
                 Err(e) => error!("❌ Session error: {}", e),
             }
@@ -419,15 +459,23 @@ impl EventHandler for Handler {
         if let Interaction::Command(command) = interaction {
             info!("⚔️ Command: /{}", command.data.name);
             let cmd_name = command.data.name.clone();
-            
+
             let channel_id_str = command.channel_id.to_string();
             let channel_config = ChannelConfig::load().await.unwrap_or_default();
             let agent_type = channel_config.get_agent_type(&channel_id_str);
-            
+
             let state = self.state.clone();
             let cmd_interaction = command.clone();
             tokio::spawn(async move {
-                if let Ok((agent, _)) = state.session_manager.get_or_create_session(cmd_interaction.channel_id.get(), agent_type, &state.backend_manager).await {
+                if let Ok((agent, _)) = state
+                    .session_manager
+                    .get_or_create_session(
+                        cmd_interaction.channel_id.get(),
+                        agent_type,
+                        &state.backend_manager,
+                    )
+                    .await
+                {
                     for cmd in commands::get_all_commands() {
                         if cmd.name() == cmd_name {
                             let _ = cmd.execute(&ctx, &cmd_interaction, agent, &state).await;
@@ -442,11 +490,24 @@ impl EventHandler for Handler {
                 let _ = handle_button(&ctx, &component, &self.state).await;
             } else if custom_id.starts_with("model_select") {
                 let channel_id_str = component.channel_id.to_string();
-                let agent_type = ChannelConfig::load().await.unwrap_or_default().get_agent_type(&channel_id_str);
+                let agent_type = ChannelConfig::load()
+                    .await
+                    .unwrap_or_default()
+                    .get_agent_type(&channel_id_str);
                 let state = self.state.clone();
                 tokio::spawn(async move {
-                    if let Ok((agent, _)) = state.session_manager.get_or_create_session(component.channel_id.get(), agent_type, &state.backend_manager).await {
-                        let _ = commands::model::handle_model_select(&ctx, &component, agent, &state).await;
+                    if let Ok((agent, _)) = state
+                        .session_manager
+                        .get_or_create_session(
+                            component.channel_id.get(),
+                            agent_type,
+                            &state.backend_manager,
+                        )
+                        .await
+                    {
+                        let _ =
+                            commands::model::handle_model_select(&ctx, &component, agent, &state)
+                                .await;
                     }
                 });
             }
@@ -464,8 +525,15 @@ async fn run_bot() -> anyhow::Result<()> {
         i18n: Arc::new(RwLock::new(I18n::new(&config.language))),
         backend_manager: Arc::new(agent::manager::BackendManager::new(config.clone())),
     };
-    let mut client = Client::builder(&state.config.discord_token, GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT | GatewayIntents::GUILDS | GatewayIntents::DIRECT_MESSAGES)
-        .event_handler(Handler { state }).await?;
+    let mut client = Client::builder(
+        &state.config.discord_token,
+        GatewayIntents::GUILD_MESSAGES
+            | GatewayIntents::MESSAGE_CONTENT
+            | GatewayIntents::GUILDS
+            | GatewayIntents::DIRECT_MESSAGES,
+    )
+    .event_handler(Handler { state })
+    .await?;
     client.start().await?;
     Ok(())
 }
@@ -477,7 +545,10 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::Run) => run_bot().await?,
         Some(Commands::Version) => println!("v{}", env!("CARGO_PKG_VERSION")),
-        _ => { /* manage daemon logic skipped for brevity */ run_bot().await? }
+        _ => {
+            /* manage daemon logic skipped for brevity */
+            run_bot().await?
+        }
     }
     Ok(())
 }

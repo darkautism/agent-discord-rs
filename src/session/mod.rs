@@ -67,24 +67,22 @@ impl SessionManager {
                     api_key,
                     existing_sid,
                     model_opt,
-                    "opencode"
-                ).await?;
-                
-                self.persist_sid(channel_id, AgentType::Opencode, agent.session_id.clone()).await?;
+                    "opencode",
+                )
+                .await?;
+
+                self.persist_sid(channel_id, AgentType::Opencode, agent.session_id.clone())
+                    .await?;
                 agent
             }
             AgentType::Kilo => {
                 let port = backend_manager.ensure_backend(&AgentType::Kilo).await?;
                 let api_url = format!("http://127.0.0.1:{}", port);
-                
-                let agent = KiloAgent::new(
-                    channel_id,
-                    api_url,
-                    existing_sid,
-                    model_opt
-                ).await?;
 
-                self.persist_sid(channel_id, AgentType::Kilo, agent.session_id()).await?;
+                let agent = KiloAgent::new(channel_id, api_url, existing_sid, model_opt).await?;
+
+                self.persist_sid(channel_id, AgentType::Kilo, agent.session_id())
+                    .await?;
                 agent
             }
         };
@@ -103,12 +101,17 @@ impl SessionManager {
         Ok((session, is_brand_new))
     }
 
-    async fn persist_sid(&self, channel_id: u64, agent_type: AgentType, sid: String) -> anyhow::Result<()> {
+    async fn persist_sid(
+        &self,
+        channel_id: u64,
+        agent_type: AgentType,
+        sid: String,
+    ) -> anyhow::Result<()> {
         let channel_id_str = channel_id.to_string();
         let mut channel_config = crate::commands::agent::ChannelConfig::load()
             .await
             .unwrap_or_default();
-            
+
         let entry = channel_config
             .channels
             .entry(channel_id_str)
@@ -120,7 +123,7 @@ impl SessionManager {
                 model_provider: None,
                 model_id: None,
             });
-            
+
         entry.session_id = Some(sid);
         channel_config.save().await?;
         Ok(())

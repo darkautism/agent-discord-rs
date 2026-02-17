@@ -17,7 +17,15 @@ impl KiloAgent {
         existing_sid: Option<String>,
         model_opt: Option<(String, String)>,
     ) -> anyhow::Result<Arc<Self>> {
-        let inner = OpencodeAgent::new(channel_id, base_url, "".to_string(), existing_sid, model_opt, "kilo").await?;
+        let inner = OpencodeAgent::new(
+            channel_id,
+            base_url,
+            "".to_string(),
+            existing_sid,
+            model_opt,
+            "kilo",
+        )
+        .await?;
         Ok(Arc::new(Self { inner }))
     }
 

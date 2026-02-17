@@ -15,15 +15,17 @@ impl SlashCommand for SkillCommand {
         "skill"
     }
 
-    fn description(&self) -> &'static str {
-        "手動載入特定的 skill"
+    fn description(&self, i18n: &crate::i18n::I18n) -> String {
+        i18n.get("cmd_skill_desc")
     }
 
-    fn options(&self) -> Vec<CreateCommandOption> {
-        vec![
-            CreateCommandOption::new(CommandOptionType::String, "name", "Skill 名稱")
-                .required(true),
-        ]
+    fn options(&self, i18n: &crate::i18n::I18n) -> Vec<CreateCommandOption> {
+        vec![CreateCommandOption::new(
+            CommandOptionType::String,
+            "name",
+            i18n.get("cmd_skill_opt_name"),
+        )
+        .required(true)]
     }
 
     async fn execute(
@@ -31,7 +33,7 @@ impl SlashCommand for SkillCommand {
         ctx: &Context,
         command: &CommandInteraction,
         agent: Arc<dyn AiAgent>,
-        _state: &crate::AppState,
+        state: &crate::AppState,
     ) -> anyhow::Result<()> {
         command.defer_ephemeral(&ctx.http).await?;
 
@@ -43,26 +45,22 @@ impl SlashCommand for SkillCommand {
             .and_then(|o| o.value.as_str())
             .unwrap_or("");
 
+        let i18n = state.i18n.read().await;
         match agent.load_skill(name).await {
             Ok(_) => {
+                let msg = i18n.get_args("skill_loading", &[name.to_string()]);
                 command
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new()
-                            .content(format!("✅ 正在載入 skill: {}", name)),
-                    )
+                    .edit_response(&ctx.http, EditInteractionResponse::new().content(msg))
                     .await?;
             }
             Err(e) => {
+                let msg = i18n.get_args("skill_failed", &[e.to_string()]);
                 command
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new()
-                            .content(format!("❌ 載入 skill 失敗: {}", e)),
-                    )
+                    .edit_response(&ctx.http, EditInteractionResponse::new().content(msg))
                     .await?;
             }
         }
+        drop(i18n);
 
         Ok(())
     }

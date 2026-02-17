@@ -17,12 +17,12 @@ impl SlashCommand for ModelCommand {
         "model"
     }
 
-    fn description(&self) -> &'static str {
-        "切換當前頻道使用的模型"
+    fn description(&self, i18n: &crate::i18n::I18n) -> String {
+        i18n.get("cmd_model_desc")
     }
 
     // 不使用 options，改用 Select Menu
-    fn options(&self) -> Vec<serenity::all::CreateCommandOption> {
+    fn options(&self, _i18n: &crate::i18n::I18n) -> Vec<serenity::all::CreateCommandOption> {
         vec![]
     }
 
@@ -31,10 +31,12 @@ impl SlashCommand for ModelCommand {
         ctx: &Context,
         command: &CommandInteraction,
         agent: Arc<dyn AiAgent>,
-        _state: &crate::AppState,
+        state: &crate::AppState,
     ) -> anyhow::Result<()> {
         // 先 defer，避免 3 秒超時
         command.defer_ephemeral(&ctx.http).await?;
+
+        let i18n = state.i18n.read().await;
 
         // 獲取可用模型列表
         let models = match agent.get_available_models().await {
@@ -48,7 +50,7 @@ impl SlashCommand for ModelCommand {
                     .edit_response(
                         &ctx.http,
                         EditInteractionResponse::new()
-                            .content(format!("❌ 無法獲取模型列表: {}", e)),
+                            .content(i18n.get_args("model_fetch_failed", &[e.to_string()])),
                     )
                     .await?;
                 return Ok(());
@@ -59,7 +61,7 @@ impl SlashCommand for ModelCommand {
             command
                 .edit_response(
                     &ctx.http,
-                    EditInteractionResponse::new().content("❌ 目前沒有可用的模型"),
+                    EditInteractionResponse::new().content(i18n.get("model_no_available")),
                 )
                 .await?;
             return Ok(());
@@ -89,7 +91,7 @@ impl SlashCommand for ModelCommand {
                     options: select_options,
                 },
             )
-            .placeholder(format!("選擇模型 (分頁 {})", idx + 1))
+            .placeholder(i18n.get_args("model_placeholder", &[(idx + 1).to_string()]))
             .min_values(1)
             .max_values(1);
 
@@ -101,10 +103,7 @@ impl SlashCommand for ModelCommand {
             .edit_response(
                 &ctx.http,
                 EditInteractionResponse::new()
-                    .content(format!(
-                        "🤖 發現 {} 個模型，請選擇要使用的模型：",
-                        total_models
-                    ))
+                    .content(i18n.get_args("model_fetched", &[total_models.to_string()]))
                     .components(action_rows),
             )
             .await
@@ -122,10 +121,12 @@ pub async fn handle_model_select(
     ctx: &Context,
     interaction: &serenity::all::ComponentInteraction,
     agent: Arc<dyn AiAgent>,
-        _state: &crate::AppState,
+    state: &crate::AppState,
 ) -> anyhow::Result<()> {
     // 先 defer，避免 3 秒超時
     interaction.defer_ephemeral(&ctx.http).await?;
+
+    let i18n = state.i18n.read().await;
 
     if let serenity::all::ComponentInteractionDataKind::StringSelect { values } =
         &interaction.data.kind
@@ -139,7 +140,12 @@ pub async fn handle_model_select(
                             .edit_response(
                                 &ctx.http,
                                 EditInteractionResponse::new()
-                                    .content(format!("✅ 已切換至模型: {}", composite_id))
+                                    .content(
+                                        i18n.get_args(
+                                            "model_switched",
+                                            &[composite_id.to_string()],
+                                        ),
+                                    )
                                     .components(vec![]), // 移除 Select Menu
                             )
                             .await?;
@@ -149,7 +155,7 @@ pub async fn handle_model_select(
                             .edit_response(
                                 &ctx.http,
                                 EditInteractionResponse::new()
-                                    .content(format!("❌ 切換模型失敗: {}", e))
+                                    .content(i18n.get_args("model_failed", &[e.to_string()]))
                                     .components(vec![]),
                             )
                             .await?;
@@ -160,7 +166,7 @@ pub async fn handle_model_select(
                     .edit_response(
                         &ctx.http,
                         EditInteractionResponse::new()
-                            .content("❌ 無效的模型格式")
+                            .content(i18n.get("model_invalid"))
                             .components(vec![]),
                     )
                     .await?;

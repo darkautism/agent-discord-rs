@@ -3,11 +3,13 @@ use serenity::all::{CommandInteraction, Context, CreateCommand, CreateCommandOpt
 use std::sync::Arc;
 
 use crate::agent::AiAgent;
+use crate::i18n::I18n;
 
 pub mod abort;
 pub mod agent;
 pub mod clear;
 pub mod compact;
+pub mod language;
 pub mod mention_only;
 pub mod model;
 pub mod skill;
@@ -16,14 +18,14 @@ pub mod thinking;
 #[async_trait]
 pub trait SlashCommand: Send + Sync {
     fn name(&self) -> &'static str;
-    fn description(&self) -> &'static str;
-    fn options(&self) -> Vec<CreateCommandOption> {
+    fn description(&self, i18n: &I18n) -> String;
+    fn options(&self, _i18n: &I18n) -> Vec<CreateCommandOption> {
         vec![]
     }
 
-    fn create_command(&self) -> CreateCommand {
-        let mut cmd = CreateCommand::new(self.name()).description(self.description());
-        for opt in self.options() {
+    fn create_command(&self, i18n: &I18n) -> CreateCommand {
+        let mut cmd = CreateCommand::new(self.name()).description(self.description(i18n));
+        for opt in self.options(i18n) {
             cmd = cmd.add_option(opt);
         }
         cmd
@@ -48,5 +50,6 @@ pub fn get_all_commands() -> Vec<Box<dyn SlashCommand>> {
         Box::new(abort::AbortCommand),
         Box::new(skill::SkillCommand),
         Box::new(mention_only::MentionOnlyCommand),
+        Box::new(language::LanguageCommand),
     ]
 }

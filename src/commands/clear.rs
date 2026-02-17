@@ -3,9 +3,9 @@ use async_trait::async_trait;
 use serenity::all::{CommandInteraction, Context, EditInteractionResponse};
 use std::sync::Arc;
 
+use super::agent::ChannelConfig;
 use crate::agent::AiAgent;
 use crate::migrate;
-use super::agent::ChannelConfig;
 
 pub struct ClearCommand;
 
@@ -15,8 +15,8 @@ impl SlashCommand for ClearCommand {
         "clear"
     }
 
-    fn description(&self) -> &'static str {
-        "硬清除當前對話進程並刪除歷史存檔"
+    fn description(&self, i18n: &crate::i18n::I18n) -> String {
+        i18n.get("cmd_clear_desc")
     }
 
     async fn execute(
@@ -53,11 +53,12 @@ impl SlashCommand for ClearCommand {
             }
         }
 
+        let i18n = state.i18n.read().await;
+        let msg = i18n.get("clear_success");
+        drop(i18n);
+
         command
-            .edit_response(
-                &ctx.http,
-                EditInteractionResponse::new().content("✅ 已徹底清除會話狀態"),
-            )
+            .edit_response(&ctx.http, EditInteractionResponse::new().content(msg))
             .await?;
 
         Ok(())

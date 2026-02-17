@@ -1,11 +1,10 @@
+use crate::agent::AgentType;
 use std::collections::HashMap;
-use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
-use tracing::{info, error, warn};
-use std::time::Duration;
-use crate::agent::AgentType;
+use tracing::{error, info, warn};
 
 pub struct BackendProcess {
     pub child: Mutex<Child>,
@@ -51,7 +50,7 @@ impl BackendManager {
 
     pub async fn ensure_backend(&self, agent_type: &AgentType) -> anyhow::Result<u16> {
         let key = agent_type.to_string();
-        
+
         // 1. 快速檢查是否已有運行的進程 (使用最小鎖定範圍)
         let mut dead_backend = false;
         {
@@ -86,36 +85,53 @@ impl BackendManager {
         };
 
         let resolved_path = Self::resolve_binary_path(bin_name);
-        info!("🚀 Starting {} on port {} from {}", agent_type, port, resolved_path);
+        info!(
+            "🚀 Starting {} on port {} from {}",
+            agent_type, port, resolved_path
+        );
 
         let mut cmd = Command::new(&resolved_path);
         cmd.arg("serve")
-            .arg("--port").arg(port.to_string())
-            .arg("--hostname").arg("127.0.0.1")
+            .arg("--port")
+            .arg(port.to_string())
+            .arg("--hostname")
+            .arg("127.0.0.1")
             .env("NODE_OPTIONS", "--max-old-space-size=4096"); // 透過環境變數限制封裝後的 Node.js 內存
 
         let home = std::env::var("HOME").unwrap_or_else(|_| "/home/kautism".to_string());
         let current_path = std::env::var("PATH").unwrap_or_default();
-        let new_path = format!("{}/.npm-global/bin:{}:{}/.opencode/bin", home, current_path, home);
+        let new_path = format!(
+            "{}/.npm-global/bin:{}:{}/.opencode/bin",
+            home, current_path, home
+        );
         cmd.env("PATH", new_path);
 
         if let Some(password) = &self.config.opencode.password {
             if !password.is_empty() {
                 match agent_type {
-                    AgentType::Opencode => { cmd.env("OPENCODE_SERVER_PASSWORD", password); }
-                    AgentType::Kilo => { cmd.env("KILO_SERVER_PASSWORD", password); }
+                    AgentType::Opencode => {
+                        cmd.env("OPENCODE_SERVER_PASSWORD", password);
+                    }
+                    AgentType::Kilo => {
+                        cmd.env("KILO_SERVER_PASSWORD", password);
+                    }
                     _ => {}
                 }
             }
         }
 
-        let child = cmd.spawn().map_err(|e| anyhow::anyhow!("Spawn failed: {}", e))?;
-        let process = Arc::new(BackendProcess { child: Mutex::new(child), port });
+        let child = cmd
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("Spawn failed: {}", e))?;
+        let process = Arc::new(BackendProcess {
+            child: Mutex::new(child),
+            port,
+        });
         procs.insert(key, process);
-        
+
         // 3. 等待健康檢查 (釋放鎖定，避免阻塞其他頻道)
         drop(procs);
-        
+
         let mut attempts = 0;
         let client = reqwest::Client::new();
         let health_url = format!("http://127.0.0.1:{}/provider", port);
@@ -124,7 +140,9 @@ impl BackendManager {
             tokio::time::sleep(Duration::from_millis(500)).await;
             let mut req = client.get(&health_url);
             if let Some(password) = &self.config.opencode.password {
-                if !password.is_empty() { req = req.header("Authorization", format!("Bearer {}", password)); }
+                if !password.is_empty() {
+                    req = req.header("Authorization", format!("Bearer {}", password));
+                }
             }
 
             match req.send().await {

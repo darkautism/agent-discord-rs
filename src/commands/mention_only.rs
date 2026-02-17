@@ -6,7 +6,6 @@ use serenity::all::{
 use std::sync::Arc;
 
 use crate::agent::AiAgent;
-use crate::auth::AuthManager;
 
 pub struct MentionOnlyCommand;
 
@@ -16,15 +15,15 @@ impl SlashCommand for MentionOnlyCommand {
         "mention_only"
     }
 
-    fn description(&self) -> &'static str {
-        "切換 Mention 模式（僅限已認證頻道）"
+    fn description(&self, i18n: &crate::i18n::I18n) -> String {
+        i18n.get("cmd_mention_desc")
     }
 
-    fn options(&self) -> Vec<CreateCommandOption> {
+    fn options(&self, i18n: &crate::i18n::I18n) -> Vec<CreateCommandOption> {
         vec![CreateCommandOption::new(
             CommandOptionType::Boolean,
             "enable",
-            "是否啟用 Mention Only 模式",
+            i18n.get("cmd_mention_opt_enabled"),
         )
         .required(true)]
     }
@@ -34,7 +33,7 @@ impl SlashCommand for MentionOnlyCommand {
         ctx: &Context,
         command: &CommandInteraction,
         _agent: Arc<dyn AiAgent>,
-        _state: &crate::AppState,
+        state: &crate::AppState,
     ) -> anyhow::Result<()> {
         command.defer_ephemeral(&ctx.http).await?;
 
@@ -47,15 +46,14 @@ impl SlashCommand for MentionOnlyCommand {
             .unwrap_or(true);
 
         let ch_id = command.channel_id.to_string();
-        let auth = AuthManager::new();
+        let auth = state.auth.clone();
 
+        let i18n = state.i18n.read().await;
         let msg = match auth.set_mention_only(&ch_id, enable) {
-            Ok(_) => format!(
-                "✅ Mention-only 模式: **{}**",
-                if enable { "啟用" } else { "停用" }
-            ),
-            Err(_) => "❌ 頻道尚未認證".to_string(),
+            Ok(_) => i18n.get(if enable { "mention_on" } else { "mention_off" }),
+            Err(_) => i18n.get("mention_not_auth"),
         };
+        drop(i18n);
 
         command
             .edit_response(&ctx.http, EditInteractionResponse::new().content(msg))

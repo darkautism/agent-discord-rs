@@ -80,18 +80,20 @@ impl SlashCommand for AgentCommand {
         "agent"
     }
 
-    fn description(&self) -> &'static str {
-        "切換 AI Agent backend"
+    fn description(&self, i18n: &crate::i18n::I18n) -> String {
+        i18n.get("cmd_agent_desc")
     }
 
-    fn options(&self) -> Vec<CreateCommandOption> {
-        vec![
-            CreateCommandOption::new(CommandOptionType::String, "backend", "選擇 agent backend")
-                .required(true)
-                .add_string_choice("Kilo (高效單例)", "kilo")
-                .add_string_choice("Pi (本地 RPC)", "pi")
-                .add_string_choice("OpenCode (HTTP API)", "opencode"),
-        ]
+    fn options(&self, i18n: &crate::i18n::I18n) -> Vec<CreateCommandOption> {
+        vec![CreateCommandOption::new(
+            CommandOptionType::String,
+            "backend",
+            i18n.get("cmd_agent_opt_backend"),
+        )
+        .required(true)
+        .add_string_choice("Kilo (高效單例)", "kilo")
+        .add_string_choice("Pi (本地 RPC)", "pi")
+        .add_string_choice("OpenCode (HTTP API)", "opencode")]
     }
 
     async fn execute(
@@ -99,12 +101,12 @@ impl SlashCommand for AgentCommand {
         ctx: &Context,
         command: &CommandInteraction,
         _agent: Arc<dyn crate::agent::AiAgent>,
-        __state: &crate::AppState,
+        state: &crate::AppState,
     ) -> anyhow::Result<()> {
         // 先 defer，避免 3 秒超時
         command.defer_ephemeral(&ctx.http).await?;
 
-        let new_agent_type = command
+        let new_agent_type_str = command
             .data
             .options
             .iter()
@@ -112,39 +114,36 @@ impl SlashCommand for AgentCommand {
             .and_then(|o| o.value.as_str())
             .unwrap_or("pi");
 
-        let new_agent_type: AgentType = new_agent_type.parse()?;
+        let new_agent_type: AgentType = new_agent_type_str.parse()?;
         let channel_id = command.channel_id.to_string();
 
         // 檢查當前 agent 類型
         let config = ChannelConfig::load().await?;
         let current_agent = config.get_agent_type(&channel_id);
 
+        let i18n = state.i18n.read().await;
+
         if current_agent == new_agent_type {
+            let msg = i18n.get_args("agent_already", &[new_agent_type.to_string()]);
             command
-                .edit_response(
-                    &ctx.http,
-                    EditInteractionResponse::new()
-                        .content(format!("ℹ️ 已經在使用 {} backend", new_agent_type)),
-                )
+                .edit_response(&ctx.http, EditInteractionResponse::new().content(msg))
                 .await?;
             return Ok(());
         }
 
         // 發送確認訊息 + 按鈕
+        let confirm_msg = i18n.get_args("agent_confirm", &[new_agent_type.to_string()]);
         command
             .edit_response(
                 &ctx.http,
                 EditInteractionResponse::new()
-                    .content(format!(
-                        "⚠️ 切換至 {} backend 將會清除當前對話歷史，確定要繼續嗎？",
-                        new_agent_type
-                    ))
+                    .content(confirm_msg)
                     .components(vec![CreateActionRow::Buttons(vec![
                         CreateButton::new(format!("agent_confirm:{}", new_agent_type))
-                            .label("✅ 確定清除")
+                            .label(i18n.get("agent_confirm_btn"))
                             .style(ButtonStyle::Danger),
                         CreateButton::new("agent_cancel")
-                            .label("❌ 取消")
+                            .label(i18n.get("agent_cancel_btn"))
                             .style(ButtonStyle::Secondary),
                     ])]),
             )
@@ -163,13 +162,14 @@ pub async fn handle_button(
     interaction.defer_ephemeral(&ctx.http).await?;
 
     let custom_id = interaction.data.custom_id.as_str();
+    let i18n = state.i18n.read().await;
 
     if custom_id == "agent_cancel" {
         interaction
             .edit_response(
                 &ctx.http,
                 EditInteractionResponse::new()
-                    .content("❌ 已取消切換")
+                    .content(i18n.get("agent_cancelled"))
                     .components(vec![]),
             )
             .await?;
@@ -203,7 +203,7 @@ pub async fn handle_button(
                     .edit_response(
                         &ctx.http,
                         EditInteractionResponse::new()
-                            .content(format!("✅ 已切換至 {} backend\n新對話已開始", agent_type))
+                            .content(i18n.get_args("agent_switched", &[agent_type.to_string()]))
                             .components(vec![]),
                     )
                     .await?;

@@ -5,10 +5,10 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
-use std::time::Duration;
+use tracing::{error, info};
 
 pub struct OpencodeAgent {
     client: reqwest::Client,
@@ -31,17 +31,29 @@ impl OpencodeAgent {
         model_opt: Option<(String, String)>,
         agent_type_name: &'static str,
     ) -> anyhow::Result<Arc<Self>> {
-        let client = reqwest::Client::builder().timeout(Duration::from_secs(120)).build()?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()?;
         let mut session_id = existing_sid;
 
         if session_id.is_none() {
-            info!("Creating NEW {} session for channel {}", agent_type_name, channel_id);
-            let resp = client.post(format!("{}/session", base_url))
+            info!(
+                "Creating NEW {} session for channel {}",
+                agent_type_name, channel_id
+            );
+            let resp = client
+                .post(format!("{}/session", base_url))
                 .header("Authorization", format!("Bearer {}", api_key))
                 .json(&json!({ "title": format!("Discord #{}", channel_id) }))
-                .send().await?;
+                .send()
+                .await?;
             let info: Value = resp.json().await?;
-            session_id = Some(info["id"].as_str().ok_or_else(|| anyhow::anyhow!("Create failed"))?.to_string());
+            session_id = Some(
+                info["id"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Create failed"))?
+                    .to_string(),
+            );
         }
 
         let session_id = session_id.unwrap();
@@ -50,8 +62,15 @@ impl OpencodeAgent {
         let turn_failed = Arc::new(AtomicBool::new(false));
 
         let agent = Arc::new(Self {
-            client, api_key: api_key.clone(), base_url: base_url.clone(), session_id: session_id.clone(),
-            channel_id, event_tx: event_tx.clone(), current_model, turn_failed, agent_type_name,
+            client,
+            api_key: api_key.clone(),
+            base_url: base_url.clone(),
+            session_id: session_id.clone(),
+            channel_id,
+            event_tx: event_tx.clone(),
+            current_model,
+            turn_failed,
+            agent_type_name,
         });
 
         let sse_url = format!("{}/event", base_url);
@@ -71,11 +90,20 @@ impl OpencodeAgent {
                 let mut stream = sse_client.stream();
                 while let Some(event) = stream.next().await {
                     retry = 0;
-                    if let Ok(val) = serde_json::from_str::<Value>(&match event { Ok(SSE::Event(e)) => e.data, _ => continue }) {
-                        if let Some(agent) = agent_weak.upgrade() { agent.handle_event(val).await; } else { return; }
+                    if let Ok(val) = serde_json::from_str::<Value>(&match event {
+                        Ok(SSE::Event(e)) => e.data,
+                        _ => continue,
+                    }) {
+                        if let Some(agent) = agent_weak.upgrade() {
+                            agent.handle_event(val).await;
+                        } else {
+                            return;
+                        }
                     }
                 }
-                if agent_weak.strong_count() == 0 || retry > 10 { break; }
+                if agent_weak.strong_count() == 0 || retry > 10 {
+                    break;
+                }
                 retry += 1;
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
@@ -95,20 +123,36 @@ impl OpencodeAgent {
     async fn handle_event(&self, val: Value) {
         let type_ = val["type"].as_str().unwrap_or("");
         // 只記錄關鍵事件，避免日誌過多
-        if !type_.contains("delta") { info!("📡 SSE Event: type={}", type_); }
-        
+        if !type_.contains("delta") {
+            info!("📡 SSE Event: type={}", type_);
+        }
+
         let properties = &val["properties"];
         let data = &val["data"];
 
         match type_ {
             "message.part.updated" | "message.part.delta" | "session.message.part.delta" => {
-                let part_info = if properties["part"].is_object() { &properties["part"] } else { data };
-                let part_type = part_info["type"].as_str().or(properties["type"].as_str()).unwrap_or("text");
-                let part_id = part_info["id"].as_str().or(properties["partID"].as_str()).map(|s| s.to_string());
-                let delta = properties["delta"].as_str().or(data["delta"].as_str()).unwrap_or("");
+                let part_info = if properties["part"].is_object() {
+                    &properties["part"]
+                } else {
+                    data
+                };
+                let part_type = part_info["type"]
+                    .as_str()
+                    .or(properties["type"].as_str())
+                    .unwrap_or("text");
+                let part_id = part_info["id"]
+                    .as_str()
+                    .or(properties["partID"].as_str())
+                    .map(|s| s.to_string());
+                let delta = properties["delta"]
+                    .as_str()
+                    .or(data["delta"].as_str())
+                    .unwrap_or("");
 
                 // 核心過濾：只允許 assistant 角色或正在思考的內容
-                let role = properties["messageRole"].as_str()
+                let role = properties["messageRole"]
+                    .as_str()
                     .or(data["messageRole"].as_str())
                     .or(properties["role"].as_str())
                     .or(data["role"].as_str())
@@ -116,47 +160,78 @@ impl OpencodeAgent {
                     .unwrap_or("");
 
                 // 如果明確是 system/user 角色且不是思考，就跳過
-                if (role == "system" || role == "user") && !part_type.contains("reason") && !part_type.contains("think") {
+                if (role == "system" || role == "user")
+                    && !part_type.contains("reason")
+                    && !part_type.contains("think")
+                {
                     return;
                 }
 
                 if part_type.contains("reason") || part_type.contains("think") {
                     let _ = self.event_tx.send(AgentEvent::MessageUpdate {
-                        thinking: delta.into(), text: "".into(), is_delta: true, id: part_id,
+                        thinking: delta.into(),
+                        text: "".into(),
+                        is_delta: true,
+                        id: part_id,
                     });
                 } else if part_type.contains("tool") || part_type == "agent" {
                     let id = part_id.unwrap_or_else(|| "tool".into());
                     let status = part_info["state"]["status"].as_str().unwrap_or("");
                     if status == "running" || status == "pending" {
                         let name = part_info["tool"].as_str().unwrap_or("tool");
-                        let cmd = part_info["state"]["input"]["command"].as_str().unwrap_or("");
-                        let _ = self.event_tx.send(AgentEvent::ToolExecutionStart { id, name: format!("🛠️ `{}`: `{}`", name, cmd) });
+                        let cmd = part_info["state"]["input"]["command"]
+                            .as_str()
+                            .unwrap_or("");
+                        let _ = self.event_tx.send(AgentEvent::ToolExecutionStart {
+                            id,
+                            name: format!("🛠️ `{}`: `{}`", name, cmd),
+                        });
                     } else if status == "completed" {
-                        let output = part_info["state"]["metadata"]["output"].as_str().or(part_info["state"]["output"].as_str()).unwrap_or("");
-                        let _ = self.event_tx.send(AgentEvent::ToolExecutionUpdate { id, output: output.into() });
+                        let output = part_info["state"]["metadata"]["output"]
+                            .as_str()
+                            .or(part_info["state"]["output"].as_str())
+                            .unwrap_or("");
+                        let _ = self.event_tx.send(AgentEvent::ToolExecutionUpdate {
+                            id,
+                            output: output.into(),
+                        });
                     }
                 } else {
                     let _ = self.event_tx.send(AgentEvent::MessageUpdate {
-                        thinking: "".into(), text: delta.into(), is_delta: true, id: part_id,
+                        thinking: "".into(),
+                        text: delta.into(),
+                        is_delta: true,
+                        id: part_id,
                     });
                 }
             }
-            "session.turn.close" | "session.message.completed" | "turn.close" | "message.completed" | "turn.end" | "session.idle" => {
+            "session.turn.close"
+            | "session.message.completed"
+            | "turn.close"
+            | "message.completed"
+            | "turn.end"
+            | "session.idle" => {
                 info!("🏁 Turn completed signal received: {}", type_);
-                if !self.turn_failed.load(Ordering::SeqCst) { self.trigger_sync().await; }
+                if !self.turn_failed.load(Ordering::SeqCst) {
+                    self.trigger_sync().await;
+                }
             }
             "session.error" | "error" => {
                 error!("❌ FULL ERROR JSON: {}", val);
-                
+
                 // 嘗試從嵌套結構中提取最有用的錯誤訊息
-                let msg = properties["error"]["data"]["message"].as_str()
+                let msg = properties["error"]["data"]["message"]
+                    .as_str()
                     .or(properties["message"].as_str())
                     .or(data["message"].as_str())
                     .unwrap_or("Unknown Error");
-                
+
                 error!("❌ Backend Error Summary: {}", msg);
                 self.turn_failed.store(true, Ordering::SeqCst);
-                let _ = self.event_tx.send(AgentEvent::AgentEnd { success: false, error: Some(msg.into()) });
+                let _ = self.event_tx.send(AgentEvent::AgentEnd {
+                    success: false,
+                    error: Some(msg.into()),
+                });
             }
             _ => {}
         }
@@ -169,18 +244,38 @@ impl OpencodeAgent {
         let tx = self.event_tx.clone();
         let turn_failed = Arc::clone(&self.turn_failed); // 克隆 Arc 以進入 spawn
         tokio::spawn(async move {
-            if let Ok(resp) = client.get(url).header("Authorization", format!("Bearer {}", api_key)).send().await {
+            if let Ok(resp) = client
+                .get(url)
+                .header("Authorization", format!("Bearer {}", api_key))
+                .send()
+                .await
+            {
                 if let Ok(msgs) = resp.json::<Value>().await {
-                    if let Some(last) = msgs.as_array().and_then(|a| a.iter().filter(|m| m["role"] == "assistant").last()) {
+                    if let Some(last) = msgs
+                        .as_array()
+                        .and_then(|a| a.iter().filter(|m| m["role"] == "assistant").last())
+                    {
                         if let Some(parts) = last["parts"].as_array() {
                             let mut items = Vec::new();
                             for p in parts {
                                 let t = p["type"].as_str().unwrap_or("");
-                                let content = p["text"].as_str().or(p["content"].as_str()).unwrap_or("").to_string();
+                                let content = p["text"]
+                                    .as_str()
+                                    .or(p["content"].as_str())
+                                    .unwrap_or("")
+                                    .to_string();
                                 let pid = p["id"].as_str().map(|s| s.to_string());
                                 match t {
-                                    "text" => items.push(ContentItem { type_: ContentType::Text, content, id: pid }),
-                                    "thinking" | "reasoning" => items.push(ContentItem { type_: ContentType::Thinking, content, id: pid }),
+                                    "text" => items.push(ContentItem {
+                                        type_: ContentType::Text,
+                                        content,
+                                        id: pid,
+                                    }),
+                                    "thinking" | "reasoning" => items.push(ContentItem {
+                                        type_: ContentType::Thinking,
+                                        content,
+                                        id: pid,
+                                    }),
                                     _ => {}
                                 }
                             }
@@ -191,7 +286,10 @@ impl OpencodeAgent {
             }
             let failed = turn_failed.load(Ordering::SeqCst);
             if !failed {
-                let _ = tx.send(AgentEvent::AgentEnd { success: true, error: None });
+                let _ = tx.send(AgentEvent::AgentEnd {
+                    success: true,
+                    error: None,
+                });
             }
         });
     }
@@ -211,15 +309,27 @@ impl AiAgent for OpencodeAgent {
         for attempt in 1..=max_retries {
             // --- 診斷開始：事前探測 ---
             let port = self.base_url.split(':').last().unwrap_or("0");
-            info!("🔍 [ATTEMPT {}/{}]: Checking port {}...", attempt, max_retries, port);
+            info!(
+                "🔍 [ATTEMPT {}/{}]: Checking port {}...",
+                attempt, max_retries, port
+            );
             let _ = std::process::Command::new("sh")
                 .arg("-c")
-                .arg(format!("ps aux | grep opencode | grep -v grep && lsof -i :{} || echo 'Port not bound'", port))
-                .output().map(|out| {
-                    info!("📊 [DIAG-SNAPSHOT]:\n{}", String::from_utf8_lossy(&out.stdout));
+                .arg(format!(
+                    "ps aux | grep opencode | grep -v grep && lsof -i :{} || echo 'Port not bound'",
+                    port
+                ))
+                .output()
+                .map(|out| {
+                    info!(
+                        "📊 [DIAG-SNAPSHOT]:\n{}",
+                        String::from_utf8_lossy(&out.stdout)
+                    );
                 });
 
-            let resp_res = self.client.post(&url)
+            let resp_res = self
+                .client
+                .post(&url)
                 .header("Authorization", format!("Bearer {}", self.api_key))
                 .header("Connection", "close") // 強制關閉連線，不進入連線池，防止池污染
                 .json(&body)
@@ -232,20 +342,30 @@ impl AiAgent for OpencodeAgent {
                         let err_msg = format!("API Error {}", resp.status());
                         if resp.status() == 404 {
                             let mut config = crate::commands::agent::ChannelConfig::load().await?;
-                            if let Some(entry) = config.channels.get_mut(&self.channel_id.to_string()) {
+                            if let Some(entry) =
+                                config.channels.get_mut(&self.channel_id.to_string())
+                            {
                                 entry.session_id = None;
                                 let _ = config.save().await;
                             }
-                            let _ = self.event_tx.send(AgentEvent::AgentEnd { success: false, error: Some("Session expired. Please retry.".into()) });
+                            let _ = self.event_tx.send(AgentEvent::AgentEnd {
+                                success: false,
+                                error: Some("Session expired. Please retry.".into()),
+                            });
                         } else {
-                            let _ = self.event_tx.send(AgentEvent::Error { message: err_msg.clone() });
+                            let _ = self.event_tx.send(AgentEvent::Error {
+                                message: err_msg.clone(),
+                            });
                         }
                         anyhow::bail!("{}", err_msg);
                     }
                     return Ok(()); // 成功發送，退出重試循環
                 }
                 Err(e) => {
-                    error!("⚠️ [ATTEMPT {}/{} FAIL]: {}. Retrying in 2s...", attempt, max_retries, e);
+                    error!(
+                        "⚠️ [ATTEMPT {}/{} FAIL]: {}. Retrying in 2s...",
+                        attempt, max_retries, e
+                    );
                     last_err = Some(e);
                     if attempt < max_retries {
                         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -260,9 +380,16 @@ impl AiAgent for OpencodeAgent {
             error!("🚨 [PROMPT-FINAL-FAIL]: {}. Analyzing process state...", e);
             let _ = std::process::Command::new("sh")
                 .arg("-c")
-                .arg(format!("ps aux | grep opencode | grep -v grep; lsof -i :{}; uptime", port))
-                .output().map(|out| {
-                    error!("📋 [FINAL-SNAPSHOT]:\n{}", String::from_utf8_lossy(&out.stdout));
+                .arg(format!(
+                    "ps aux | grep opencode | grep -v grep; lsof -i :{}; uptime",
+                    port
+                ))
+                .output()
+                .map(|out| {
+                    error!(
+                        "📋 [FINAL-SNAPSHOT]:\n{}",
+                        String::from_utf8_lossy(&out.stdout)
+                    );
                 });
             return Err(e.into());
         }
@@ -270,10 +397,18 @@ impl AiAgent for OpencodeAgent {
     }
     async fn get_state(&self) -> anyhow::Result<AgentState> {
         let url = format!("{}/session/{}", self.base_url, self.session_id);
-        let resp = self.client.get(url).header("Authorization", format!("Bearer {}", self.api_key)).send().await?;
+        let resp = self
+            .client
+            .get(url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await?;
         if resp.status().is_success() {
             let info: Value = resp.json().await?;
-            return Ok(AgentState { message_count: info["messageCount"].as_u64().unwrap_or(0), model: None });
+            return Ok(AgentState {
+                message_count: info["messageCount"].as_u64().unwrap_or(0),
+                model: None,
+            });
         }
         if resp.status() == 404 {
             let mut config = crate::commands::agent::ChannelConfig::load().await?;
@@ -282,7 +417,10 @@ impl AiAgent for OpencodeAgent {
                 let _ = config.save().await;
             }
         }
-        Ok(AgentState { message_count: 0, model: None })
+        Ok(AgentState {
+            message_count: 0,
+            model: None,
+        })
     }
     async fn set_model(&self, provider: &str, mid: &str) -> anyhow::Result<()> {
         let mut m = self.current_model.lock().await;
@@ -296,43 +434,86 @@ impl AiAgent for OpencodeAgent {
         Ok(())
     }
     async fn abort(&self) -> anyhow::Result<()> {
-        let _ = self.client.post(format!("{}/session/{}/abort", self.base_url, self.session_id)).header("Authorization", format!("Bearer {}", self.api_key)).send().await;
+        let _ = self
+            .client
+            .post(format!(
+                "{}/session/{}/abort",
+                self.base_url, self.session_id
+            ))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await;
         Ok(())
     }
-    async fn clear(&self) -> anyhow::Result<()> { Ok(()) }
+    async fn clear(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn compact(&self) -> anyhow::Result<()> {
         let url = format!("{}/session/{}/message", self.base_url, self.session_id);
         let body = json!({
             "parts": [{"type": "text", "text": "/compact"}]
         });
-        let resp = self.client.post(url)
+        let resp = self
+            .client
+            .post(url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&body)
-            .send().await?;
+            .send()
+            .await?;
         if !resp.status().is_success() {
             anyhow::bail!("Compact failed: {}", resp.status());
         }
         Ok(())
     }
-    async fn set_session_name(&self, _n: &str) -> anyhow::Result<()> { Ok(()) }
-    async fn set_thinking_level(&self, _l: &str) -> anyhow::Result<()> { Ok(()) }
+    async fn set_session_name(&self, _n: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn set_thinking_level(&self, _l: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn get_available_models(&self) -> anyhow::Result<Vec<ModelInfo>> {
-        let resp = self.client.get(format!("{}/provider", self.base_url)).header("Authorization", format!("Bearer {}", self.api_key)).send().await?;
+        let resp = self
+            .client
+            .get(format!("{}/provider", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await?;
         let val: Value = resp.json().await?;
-        let connected: Vec<String> = val["connected"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
+        let connected: Vec<String> = val["connected"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut models = Vec::new();
         if let Some(all) = val["all"].as_array() {
             for p in all {
                 let pid = p["id"].as_str().unwrap_or("");
-                if !connected.contains(&pid.to_string()) { continue; }
+                if !connected.contains(&pid.to_string()) {
+                    continue;
+                }
                 if let Some(m_map) = p["models"].as_object() {
-                    for (id, _) in m_map { models.push(ModelInfo { provider: pid.into(), id: id.clone(), label: format!("{}/{}", pid, id) }); }
+                    for (id, _) in m_map {
+                        models.push(ModelInfo {
+                            provider: pid.into(),
+                            id: id.clone(),
+                            label: format!("{}/{}", pid, id),
+                        });
+                    }
                 }
             }
         }
         Ok(models)
     }
-    async fn load_skill(&self, _n: &str) -> anyhow::Result<()> { Ok(()) }
-    fn subscribe_events(&self) -> broadcast::Receiver<AgentEvent> { self.event_tx.subscribe() }
-    fn agent_type(&self) -> &'static str { self.agent_type_name }
+    async fn load_skill(&self, _n: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn subscribe_events(&self) -> broadcast::Receiver<AgentEvent> {
+        self.event_tx.subscribe()
+    }
+    fn agent_type(&self) -> &'static str {
+        self.agent_type_name
+    }
 }

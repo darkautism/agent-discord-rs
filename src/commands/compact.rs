@@ -13,8 +13,8 @@ impl SlashCommand for CompactCommand {
         "compact"
     }
 
-    fn description(&self) -> &'static str {
-        "壓縮對話歷史以節省 Token"
+    fn description(&self, i18n: &crate::i18n::I18n) -> String {
+        i18n.get("cmd_compact_desc")
     }
 
     async fn execute(
@@ -22,17 +22,18 @@ impl SlashCommand for CompactCommand {
         ctx: &Context,
         command: &CommandInteraction,
         agent: Arc<dyn AiAgent>,
-        _state: &crate::AppState,
+        state: &crate::AppState,
     ) -> anyhow::Result<()> {
         command.defer_ephemeral(&ctx.http).await?;
 
         agent.compact().await?;
 
+        let i18n = state.i18n.read().await;
+        let msg = i18n.get("compact_success");
+        drop(i18n);
+
         command
-            .edit_response(
-                &ctx.http,
-                EditInteractionResponse::new().content("✅ 已壓縮對話歷史"),
-            )
+            .edit_response(&ctx.http, EditInteractionResponse::new().content(msg))
             .await?;
 
         Ok(())

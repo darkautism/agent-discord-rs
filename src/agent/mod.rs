@@ -128,14 +128,16 @@ impl std::str::FromStr for AgentType {
     }
 }
 
-pub mod manager;
 pub mod kilo;
+pub mod manager;
 pub mod opencode;
 pub mod pi;
 pub use kilo::KiloAgent;
 pub use opencode::OpencodeAgent;
 pub use pi::PiAgent;
 
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NoOpAgent;
 #[async_trait]
 impl AiAgent for NoOpAgent {
