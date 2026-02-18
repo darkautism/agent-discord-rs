@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_cron_scheduler::{Job, JobScheduler};
-use tracing::error;
+use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -12,7 +12,8 @@ use std::sync::Weak;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct CronJobInfo {
-    pub id: Uuid,
+    pub id: Uuid,             // 這是我們自定義的 ID，用於索引
+    pub scheduler_id: Option<Uuid>, // 這是排程器產生的內部 ID，用於移除
     pub channel_id: u64,
     pub cron_expr: String,
     pub prompt: String,
@@ -31,12 +32,15 @@ pub struct CronManager {
 impl CronManager {
     pub async fn new() -> anyhow::Result<Self> {
         let scheduler = JobScheduler::new().await?;
-        scheduler.start().await?;
+        // 確保 Scheduler 已經啟動
+        if let Err(e) = scheduler.start().await {
+            error!("❌ Failed to start cron scheduler: {}", e);
+        }
 
         let config_dir = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("agent-discord-rs");
-        std::fs::create_dir_all(&config_dir)?;
+        let _ = std::fs::create_dir_all(&config_dir);
 
         Ok(Self {
             scheduler,
@@ -48,31 +52,39 @@ impl CronManager {
     }
 
     pub async fn init(&self, http: Arc<serenity::all::Http>, state: Weak<AppState>) {
-        *self.http.lock().await = Some(http);
-        *self.state.lock().await = Some(state);
+        {
+            let mut h = self.http.lock().await;
+            *h = Some(http);
+            let mut s = self.state.lock().await;
+            *s = Some(state);
+        }
 
         // 啟動時重新註冊所有已載入的任務
-        let jobs: Vec<CronJobInfo> = {
+        let ids: Vec<Uuid> = {
             let jobs_map = self.jobs.lock().await;
-            jobs_map.values().cloned().collect()
+            jobs_map.keys().cloned().collect()
         };
 
-        for info in jobs {
-            let _ = self.register_job_to_scheduler(info).await;
+        for id in ids {
+            if let Err(e) = self.re_register_job(id).await {
+                error!("❌ Failed to re-register job {}: {}", id, e);
+            }
         }
+        info!("📅 CronManager initialized and jobs registered.");
     }
 
-    pub async fn add_job(&self, info: CronJobInfo) -> anyhow::Result<Uuid> {
+    pub async fn add_job(&self, mut info: CronJobInfo) -> anyhow::Result<Uuid> {
         let id = info.id;
 
-        // 1. 存入記憶體
+        // 1. 註冊到排程器並獲取內部 ID
+        let scheduler_id = self.register_job_to_scheduler(&info).await?;
+        info.scheduler_id = Some(scheduler_id);
+
+        // 2. 存入記憶體
         {
             let mut jobs = self.jobs.lock().await;
-            jobs.insert(id, info.clone());
+            jobs.insert(id, info);
         }
-
-        // 2. 註冊到排程器
-        self.register_job_to_scheduler(info).await?;
 
         // 3. 存入磁碟
         self.save_to_disk().await?;
@@ -80,7 +92,16 @@ impl CronManager {
         Ok(id)
     }
 
-    async fn register_job_to_scheduler(&self, info: CronJobInfo) -> anyhow::Result<()> {
+    async fn re_register_job(&self, id: Uuid) -> anyhow::Result<()> {
+        let mut jobs = self.jobs.lock().await;
+        if let Some(info) = jobs.get_mut(&id) {
+            let scheduler_id = self.register_job_to_scheduler(info).await?;
+            info.scheduler_id = Some(scheduler_id);
+        }
+        Ok(())
+    }
+
+    async fn register_job_to_scheduler(&self, info: &CronJobInfo) -> anyhow::Result<Uuid> {
         let cron_expr = info.cron_expr.clone();
         let prompt = info.prompt.clone();
         let channel_id_u64 = info.channel_id;
@@ -93,6 +114,7 @@ impl CronManager {
             let http_ptr = http_ptr.clone();
             let state_ptr = state_ptr.clone();
             Box::pin(async move {
+                info!("⏰ Cron job triggered for channel {}", channel_id_u64);
                 let http_opt = http_ptr.lock().await;
                 let state_weak_opt = state_ptr.lock().await;
 
@@ -135,13 +157,13 @@ impl CronManager {
                         error!("❌ Cron job triggered but AppState was dropped");
                     }
                 } else {
-                    error!("❌ Cron job triggered but Http/State not initialized");
+                    error!("❌ Cron job triggered but Http/State not initialized. Did you call init()?");
                 }
             })
         })?;
 
-        self.scheduler.add(job).await?;
-        Ok(())
+        let scheduler_id = self.scheduler.add(job).await?;
+        Ok(scheduler_id)
     }
 
     async fn save_to_disk(&self) -> anyhow::Result<()> {
@@ -163,6 +185,7 @@ impl CronManager {
 
         let mut jobs = self.jobs.lock().await;
         *jobs = loaded_jobs;
+        info!("📂 Loaded {} cron jobs from disk", jobs.len());
 
         Ok(())
     }
@@ -176,18 +199,15 @@ impl CronManager {
     }
 
     pub async fn remove_job(&self, id: Uuid) -> anyhow::Result<()> {
-        // 1. Remove from scheduler
-        self.scheduler.remove(&id).await?;
-
-        // 2. Remove from memory map
-        {
-            let mut jobs = self.jobs.lock().await;
-            jobs.remove(&id);
+        let mut jobs = self.jobs.lock().await;
+        if let Some(info) = jobs.remove(&id) {
+            if let Some(s_id) = info.scheduler_id {
+                self.scheduler.remove(&s_id).await?;
+                info!("🗑️ Removed cron job {} (scheduler id: {})", id, s_id);
+            }
         }
 
-        // 3. Save updated list to disk
         self.save_to_disk().await?;
-
         Ok(())
     }
 }
@@ -212,6 +232,7 @@ mod tests {
         let job_id = Uuid::new_v4();
         let info = CronJobInfo {
             id: job_id,
+            scheduler_id: None,
             channel_id: 12345,
             cron_expr: "0 0 * * * *".to_string(), // Every hour
             prompt: "Test Prompt".to_string(),

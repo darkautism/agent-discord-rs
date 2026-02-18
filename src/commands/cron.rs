@@ -73,6 +73,7 @@ pub async fn handle_modal_submit(
     let job_id = Uuid::new_v4();
     let info = CronJobInfo {
         id: job_id,
+        scheduler_id: None,
         channel_id: interaction.channel_id.get(),
         cron_expr,
         prompt: prompt.to_string(),
