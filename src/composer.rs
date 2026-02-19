@@ -247,3 +247,65 @@ impl EmbedComposer {
         res.trim().to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tool_output_truncation() {
+        let long_content = "A".repeat(1000);
+        let block = Block::new(BlockType::ToolOutput, long_content);
+        let rendered = block.render();
+        
+        assert!(rendered.contains("... (truncated)"));
+        assert!(rendered.len() < 600); // 500 chars + Markdown wrappers
+    }
+
+    #[test]
+    fn test_markdown_guard() {
+        let mut composer = EmbedComposer::new(100);
+        // 手動塞入一個會導致反引號不對稱的內容
+        composer.blocks.push_back(Block::new(BlockType::Text, "```rust\n unfinished".into()));
+        
+        let rendered = composer.render();
+        assert!(rendered.ends_with("```"), "Should automatically close code block");
+        assert_eq!(rendered.matches("```").count() % 2, 0);
+    }
+
+    #[test]
+    fn test_thinking_block_rendering() {
+        let block = Block::new(BlockType::Thinking, "Line 1\nLine 2".into());
+        let rendered = block.render();
+        assert_eq!(rendered, "> Line 1\n> Line 2");
+    }
+
+    #[test]
+    fn test_composer_prune() {
+        let mut composer = EmbedComposer::new(1000);
+        for i in 0..15 {
+            composer.push_delta(Some(i.to_string()), BlockType::Text, "data");
+        }
+        // 應保留最後 10 個
+        assert_eq!(composer.blocks.len(), 10);
+        assert!(composer.has_truncated);
+    }
+
+    #[test]
+    fn test_composer_sync_content() {
+        let mut composer = EmbedComposer::new(1000);
+        // 本地內容較長
+        composer.push_delta(Some("id1".into()), BlockType::Text, "longer_old_data");
+        
+        let new_items = vec![
+            // 傳入較短的內容 (例如網路同步時延後發生的舊事件)
+            Block::with_id(BlockType::Text, "shorter".into(), "id1".into()),
+            Block::with_id(BlockType::Text, "fresh".into(), "id2".into()),
+        ];
+        
+        composer.sync_content(new_items);
+        assert_eq!(composer.blocks.len(), 2);
+        // 如果 sync 的內容較短，應保留本地較長的內容（防止網路延遲導致抖動）
+        assert_eq!(composer.blocks[0].content, "longer_old_data"); 
+    }
+}

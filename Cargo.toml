@@ -9,30 +9,33 @@ categories = ["command-line-utilities", "network-programming"]
 readme = "README.md"
 
 [dependencies]
-serenity = { version = "0.12", features = ["rustls_backend"] }
-tokio = { version = "1.0", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-anyhow = "1.0"
-tracing = "0.1"
-tracing-subscriber = "0.3"
-toml = "0.8"
-async-trait = "0.1"
-uuid = { version = "1.13", features = ["v4", "serde"] }
-tokio-cron-scheduler = "0.10"
-cron-descriptor = "0.1"
-clap = { version = "4.5", features = ["derive"] }
-rust-embed = "8.5"
-fs2 = "0.4"
-rand = "0.8"
-chrono = { version = "0.4", features = ["serde"] }
-tempfile = "3.10"
-reqwest = { version = "0.12", features = ["json"] }
-eventsource-client = "0.12"
-futures = "0.3"
-base64 = "0.22"
-dirs = "5.0"
-libc = "0.2"
+serenity = { version = "0.12.5", features = ["rustls_backend"] }
+tokio = { version = "1.49", features = ["full"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+anyhow = "1.0.101"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.22"
+toml = "0.8.23"
+async-trait = "0.1.89"
+uuid = { version = "1.21", features = ["v4", "serde"] }
+tokio-cron-scheduler = "0.10.2"
+cron-descriptor = "0.1.1"
+clap = { version = "4.5.59", features = ["derive"] }
+rust-embed = "8.11"
+fs2 = "0.4.3"
+rand = "0.9"
+chrono = { version = "0.4.43", features = ["serde"] }
+tempfile = "3.25"
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
+eventsource-client = "0.16"
+futures = "0.3.32"
+base64 = "0.22.1"
+dirs = "6.0"
+libc = "0.2.182"
+
+[dev-dependencies]
+wiremock = "0.6.5"
 
 [[bin]]
 name = "agent-discord"

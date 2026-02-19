@@ -2,7 +2,7 @@ use crate::migrate;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use fs2::FileExt;
-use rand::distributions::Alphanumeric;
+use rand::distr::Alphanumeric;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -47,9 +47,16 @@ impl AuthManager {
     pub fn new() -> Self {
         let base_dir = migrate::get_base_dir();
         fs::create_dir_all(&base_dir).unwrap();
+        Self::with_paths(
+            base_dir.join("auth.json"),
+            base_dir.join("pending_tokens.json"),
+        )
+    }
+
+    pub fn with_paths(auth_path: PathBuf, pending_path: PathBuf) -> Self {
         Self {
-            auth_path: base_dir.join("auth.json"),
-            pending_path: base_dir.join("pending_tokens.json"),
+            auth_path,
+            pending_path,
         }
     }
 
@@ -133,7 +140,7 @@ impl AuthManager {
     }
 
     pub fn create_token(&self, type_: &str, id: &str) -> Result<String> {
-        let token: String = rand::thread_rng()
+        let token: String = rand::rng()
             .sample_iter(&Alphanumeric)
             .take(6)
             .map(char::from)
@@ -215,6 +222,64 @@ impl AuthManager {
             }
             Ok(())
         })?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_auth_token_flow() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let auth_path = dir.path().join("auth.json");
+        let pending_path = dir.path().join("pending_tokens.json");
+        
+        let manager = AuthManager {
+            auth_path,
+            pending_path,
+        };
+        
+        // 1. Create Token
+        let token = manager.create_token("channel", "12345")?;
+        assert_eq!(token.len(), 6);
+        
+        // 2. Redeem Token
+        let (type_, id) = manager.redeem_token(&token)?;
+        assert_eq!(type_, "channel");
+        assert_eq!(id, "12345");
+        
+        // 3. Verify Authorization
+        let (auth, mention) = manager.is_authorized("user_0", "12345");
+        assert!(auth);
+        assert!(mention); // Channel default is mention_only = true
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_auth_user_override() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let manager = AuthManager::with_paths(
+            dir.path().join("auth.json"),
+            dir.path().join("pending_tokens.json"),
+        );
+        
+        // 1. Authorize a channel with mention_only = true
+        let token = manager.create_token("channel", "chan_1")?;
+        let _ = manager.redeem_token(&token)?;
+        
+        // 2. Authorize a user globally
+        let u_token = manager.create_token("user", "user_god")?;
+        let _ = manager.redeem_token(&u_token)?;
+        
+        // 3. Check: User god should NOT be restricted by mention_only
+        let (auth, mention) = manager.is_authorized("user_god", "chan_1");
+        assert!(auth);
+        assert!(!mention); // User auth overrides channel restriction
+        
         Ok(())
     }
 }

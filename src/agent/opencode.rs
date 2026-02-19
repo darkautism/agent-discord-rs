@@ -338,37 +338,44 @@ impl AiAgent for OpencodeAgent {
 
             match resp_res {
                 Ok(resp) => {
-                    if !resp.status().is_success() {
-                        let err_msg = format!("API Error {}", resp.status());
-                        if resp.status() == 404 {
-                            let mut config = crate::commands::agent::ChannelConfig::load().await?;
-                            if let Some(entry) =
-                                config.channels.get_mut(&self.channel_id.to_string())
-                            {
-                                entry.session_id = None;
-                                let _ = config.save().await;
-                            }
-                            let _ = self.event_tx.send(AgentEvent::AgentEnd {
-                                success: false,
-                                error: Some("Session expired. Please retry.".into()),
-                            });
-                        } else {
-                            let _ = self.event_tx.send(AgentEvent::Error {
-                                message: err_msg.clone(),
-                            });
-                        }
-                        anyhow::bail!("{}", err_msg);
+                    if resp.status().is_success() {
+                        return Ok(());
                     }
-                    return Ok(()); // 成功發送，退出重試循環
+                    
+                    let status = resp.status();
+                    let err_msg = format!("API Error {}", status);
+                    error!("⚠️ [ATTEMPT {}/{} FAIL]: {}. Retrying in 2s...", attempt, max_retries, err_msg);
+
+                    if status == 404 {
+                        let mut config = crate::commands::agent::ChannelConfig::load().await?;
+                        if let Some(entry) = config.channels.get_mut(&self.channel_id.to_string()) {
+                            entry.session_id = None;
+                            let _ = config.save().await;
+                        }
+                        let _ = self.event_tx.send(AgentEvent::AgentEnd {
+                            success: false,
+                            error: Some("Session expired. Please retry.".into()),
+                        });
+                        anyhow::bail!("Session expired (404)");
+                    } else {
+                        let _ = self.event_tx.send(AgentEvent::Error {
+                            message: err_msg.clone(),
+                        });
+                    }
+                    
+                    if attempt < max_retries {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
                 }
                 Err(e) => {
                     error!(
                         "⚠️ [ATTEMPT {}/{} FAIL]: {}. Retrying in 2s...",
                         attempt, max_retries, e
                     );
-                    last_err = Some(e);
                     if attempt < max_retries {
                         tokio::time::sleep(Duration::from_secs(2)).await;
+                    } else {
+                        last_err = Some(e);
                     }
                 }
             }
@@ -515,5 +522,85 @@ impl AiAgent for OpencodeAgent {
     }
     fn agent_type(&self) -> &'static str {
         self.agent_type_name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn test_opencode_retry_logic() -> anyhow::Result<()> {
+        let mock_server = MockServer::start().await;
+        let api_key = "test_key".to_string();
+        let session_id = "test_session".to_string();
+        
+        // 模擬 3 次 500 錯誤，然後第 4 次成功 (但我們只會重試 3 次)
+        // 注意：測試邏輯是嘗試 1..=3，所以如果 3 次都失敗，最終應該回傳 Err。
+        Mock::given(method("POST"))
+            .and(path(format!("/session/{}/message", session_id)))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(3) // 預期會被呼叫 3 次
+            .mount(&mock_server)
+            .await;
+
+        let (event_tx, _) = broadcast::channel(100);
+        let agent = OpencodeAgent {
+            client: reqwest::Client::new(),
+            api_key: api_key.clone(),
+            base_url: mock_server.uri(),
+            session_id: session_id.clone(),
+            channel_id: 1,
+            event_tx,
+            current_model: Arc::new(Mutex::new(None)),
+            turn_failed: Arc::new(AtomicBool::new(false)),
+            agent_type_name: "opencode",
+        };
+
+        let result = agent.prompt("Hello").await;
+        
+        // 斷言：最終應該失敗，因為 3 次重試都拿到了 500
+        assert!(result.is_err());
+        // Mock server 會在 drop 時驗證是否真的呼叫了 3 次
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_opencode_retry_success_on_second_attempt() -> anyhow::Result<()> {
+        let mock_server = MockServer::start().await;
+        let api_key = "test_key".to_string();
+        let session_id = "test_session".to_string();
+        
+        // 第 1 次 500，第 2 次 200
+        // Wiremock 優先匹配最後一個 mounted 的，所以我們先 mount 200，再 mount 500 (限一次)
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+
+        let (event_tx, _) = broadcast::channel(100);
+        let agent = OpencodeAgent {
+            client: reqwest::Client::new(),
+            api_key,
+            base_url: mock_server.uri(),
+            session_id,
+            channel_id: 1,
+            event_tx,
+            current_model: Arc::new(Mutex::new(None)),
+            turn_failed: Arc::new(AtomicBool::new(false)),
+            agent_type_name: "opencode",
+        };
+
+        let result = agent.prompt("Hello").await;
+        assert!(result.is_ok());
+        Ok(())
     }
 }

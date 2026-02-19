@@ -285,9 +285,17 @@ port = 4096
 }
 
 pub fn get_base_dir() -> PathBuf {
-    dirs::home_dir()
-        .expect("No home directory")
-        .join(NEW_BASE_DIR)
+    #[cfg(test)]
+    {
+        // 測試模式下禁止使用真實目錄，強制讓未隔離的測試崩潰
+        panic!("FATAL: Test tried to access real data directory! Use a temporary directory instead.");
+    }
+    #[cfg(not(test))]
+    {
+        dirs::home_dir()
+            .expect("No home directory")
+            .join(NEW_BASE_DIR)
+    }
 }
 
 pub fn get_config_path() -> PathBuf {

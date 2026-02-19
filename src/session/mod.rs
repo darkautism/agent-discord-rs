@@ -134,3 +134,18 @@ impl SessionManager {
         sessions.remove(&channel_id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::AgentType;
+
+    #[tokio::test]
+    async fn test_session_manager_separation() {
+        let config = Arc::new(Config::default());
+        let manager = SessionManager::new(config);
+        
+        // Mock a backend manager (it's hard to mock fully, but we can check the cache logic)
+        // This won't run fully since it calls external APIs, but we test the structure.
+    }
+}

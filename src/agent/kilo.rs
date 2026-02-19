@@ -78,8 +78,6 @@ impl AiAgent for KiloAgent {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[tokio::test]
     async fn test_kilo_wrapper_type() {
         // 驗證封裝後的類型標籤正確

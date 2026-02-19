@@ -43,3 +43,31 @@ impl I18n {
         s
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_i18n_translation() {
+        let i18n = I18n::new("en");
+        // 驗證從 locales/en.json 讀取的基礎內容
+        assert!(!i18n.get("processing").is_empty());
+    }
+
+    #[test]
+    fn test_i18n_args_replacement() {
+        let mut i18n = I18n::new("en");
+        // 手動模擬帶參數的翻譯字串
+        i18n.texts["test_key"] = serde_json::Value::String("Value: {0}, {1}".to_string());
+        
+        let result = i18n.get_args("test_key", &["A".into(), "B".into()]);
+        assert_eq!(result, "Value: A, B");
+    }
+
+    #[test]
+    fn test_i18n_fallback_to_key() {
+        let i18n = I18n::new("en");
+        assert_eq!(i18n.get("non_existent_key_123"), "non_existent_key_123");
+    }
+}

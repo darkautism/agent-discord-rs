@@ -196,8 +196,15 @@ impl Handler {
         }
 
         let typing_http = http.clone();
+        let typing_status = Arc::clone(&status);
         handles.push(tokio::spawn(async move {
             loop {
+                {
+                    let s = typing_status.lock().await;
+                    if *s != ExecStatus::Running {
+                        break;
+                    }
+                }
                 let _ = channel_id.broadcast_typing(&typing_http).await;
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
@@ -635,8 +642,77 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::Run) => run_bot().await?,
         Some(Commands::Version) => println!("v{}", env!("CARGO_PKG_VERSION")),
+        Some(Commands::Daemon { action }) => {
+            let service_path = dirs::config_dir()
+                .unwrap()
+                .join("systemd")
+                .join("user")
+                .join("agent-discord-rs.service");
+
+            match action {
+                DaemonAction::Enable => {
+                    // 1. 偵測目前執行檔路徑
+                    let exe_path = std::env::current_exe()?
+                        .to_str()
+                        .unwrap_or("/home/kautism/.cargo/bin/agent-discord")
+                        .to_string();
+
+                    // 2. 偵測時區
+                    let tz = std::fs::read_to_string("/etc/timezone")
+                        .unwrap_or_else(|_| "UTC".to_string())
+                        .trim()
+                        .to_string();
+
+                    // 3. 取得目前環境變數
+                    let pi_binary = std::env::var("PI_BINARY")
+                        .unwrap_or_else(|_| "/home/kautism/.npm-global/bin/pi".to_string());
+
+                    let service_content = format!(
+                        r#"[Unit]
+Description=Agent Discord RS
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={} run
+Environment="PI_BINARY={}"
+Environment="TZ={}"
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
+"#,
+                        exe_path, pi_binary, tz
+                    );
+
+                    std::fs::create_dir_all(service_path.parent().unwrap())?;
+                    std::fs::write(&service_path, service_content)?;
+
+                    // 4. 啟動服務
+                    let _ = std::process::Command::new("systemctl")
+                        .args(["--user", "daemon-reload"])
+                        .status();
+                    let _ = std::process::Command::new("systemctl")
+                        .args(["--user", "enable", "--now", "agent-discord-rs.service"])
+                        .status();
+
+                    println!("✅ Daemon enabled and started at {}", service_path.display());
+                    println!("   Exe: {}", exe_path);
+                    println!("   TZ:  {}", tz);
+                }
+                DaemonAction::Disable => {
+                    let _ = std::process::Command::new("systemctl")
+                        .args(["--user", "disable", "--now", "agent-discord-rs.service"])
+                        .status();
+                    if service_path.exists() {
+                        std::fs::remove_file(service_path)?;
+                    }
+                    println!("🛑 Daemon disabled and service file removed.");
+                }
+            }
+        }
         _ => {
-            /* manage daemon logic skipped for brevity */
             run_bot().await?
         }
     }

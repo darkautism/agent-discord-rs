@@ -13,6 +13,7 @@ use std::sync::Weak;
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct CronJobInfo {
     pub id: Uuid,             // 這是我們自定義的 ID，用於索引
+    #[serde(default)]
     pub scheduler_id: Option<Uuid>, // 這是排程器產生的內部 ID，用於移除
     pub channel_id: u64,
     pub cron_expr: String,
@@ -31,15 +32,17 @@ pub struct CronManager {
 
 impl CronManager {
     pub async fn new() -> anyhow::Result<Self> {
+        let base_dir = crate::migrate::get_base_dir();
+        Self::with_config_dir(base_dir).await
+    }
+
+    pub async fn with_config_dir(config_dir: PathBuf) -> anyhow::Result<Self> {
         let scheduler = JobScheduler::new().await?;
         // 確保 Scheduler 已經啟動
         if let Err(e) = scheduler.start().await {
             error!("❌ Failed to start cron scheduler: {}", e);
         }
 
-        let config_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("agent-discord-rs");
         let _ = std::fs::create_dir_all(&config_dir);
 
         Ok(Self {
@@ -70,7 +73,10 @@ impl CronManager {
                 error!("❌ Failed to re-register job {}: {}", id, e);
             }
         }
-        info!("📅 CronManager initialized and jobs registered.");
+        
+        let local_now = chrono::Local::now();
+        let utc_now = chrono::Utc::now();
+        info!("📅 CronManager initialized. Local: {}, UTC: {}", local_now, utc_now);
     }
 
     pub async fn add_job(&self, mut info: CronJobInfo) -> anyhow::Result<Uuid> {
@@ -109,7 +115,7 @@ impl CronManager {
         let http_ptr = self.http.clone();
         let state_ptr = self.state.clone();
 
-        let job = Job::new_async(cron_expr.as_str(), move |_uuid, _l| {
+        let job = Job::new_async_tz(cron_expr.as_str(), chrono::Local, move |_uuid, _l| {
             let prompt = prompt.clone();
             let http_ptr = http_ptr.clone();
             let state_ptr = state_ptr.clone();
@@ -218,9 +224,56 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
+    async fn test_cron_persistence() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let manager = CronManager {
+            scheduler: JobScheduler::new().await?,
+            jobs: Arc::new(Mutex::new(HashMap::new())),
+            config_dir: dir.path().to_path_buf(),
+            http: Arc::new(Mutex::new(None)),
+            state: Arc::new(Mutex::new(None)),
+        };
+        manager.scheduler.start().await?;
+
+        let job_id = Uuid::new_v4();
+        let info = CronJobInfo {
+            id: job_id,
+            scheduler_id: None,
+            channel_id: 12345,
+            cron_expr: "0 0 * * * *".to_string(), // Every hour
+            prompt: "Test Prompt".to_string(),
+            creator_id: 67890,
+            description: "Test Description".to_string(),
+        };
+
+        // Add job
+        manager.add_job(info).await?;
+
+        // Check if file exists
+        let path = dir.path().join("cron_jobs.json");
+        assert!(path.exists());
+
+        // Create a new manager instance to load
+        let manager2 = CronManager {
+            scheduler: JobScheduler::new().await?,
+            jobs: Arc::new(Mutex::new(HashMap::new())),
+            config_dir: dir.path().to_path_buf(),
+            http: Arc::new(Mutex::new(None)),
+            state: Arc::new(Mutex::new(None)),
+        };
+        manager2.load_from_disk().await?;
+
+        let jobs = manager2.jobs.lock().await;
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs.get(&job_id).unwrap().prompt, "Test Prompt");
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_cron_trigger_logic() -> anyhow::Result<()> {
-        let _dir = tempdir()?;
-        let manager = CronManager::new().await?;
+        let dir = tempdir()?;
+        let manager = CronManager::with_config_dir(dir.path().to_path_buf()).await?;
         
         // Mock 任務資料
         let job_id = Uuid::new_v4();
