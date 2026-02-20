@@ -14,7 +14,7 @@
   "exec_success": "✅ Successfully executed `{}`",
   "exec_failed": "❌ Failed to execute `{}`",
   "auto_retry": "🔄 **Auto-retry** ({}/{}) due to error...",
-  "cmd_agent_desc": "Switch AI Agent backend (Kilo/Pi/OpenCode)",
+  "cmd_agent_desc": "Switch AI Agent backend (Kilo/Copilot/Pi/OpenCode)",
   "cmd_agent_opt_backend": "Select backend type",
   "cmd_model_desc": "Switch the model used in the current channel",
   "cmd_thinking_desc": "Set the AI thinking level (if supported)",

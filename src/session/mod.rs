@@ -1,4 +1,4 @@
-use crate::agent::{AgentType, AiAgent, KiloAgent, OpencodeAgent, PiAgent};
+use crate::agent::{AgentType, AiAgent, CopilotAgent, KiloAgent, OpencodeAgent, PiAgent};
 use crate::config::Config;
 use crate::migrate;
 use std::collections::HashMap;
@@ -72,6 +72,12 @@ impl SessionManager {
                 .await?;
 
                 self.persist_sid(channel_id, AgentType::Opencode, agent.session_id.clone())
+                    .await?;
+                agent
+            }
+            AgentType::Copilot => {
+                let agent = CopilotAgent::new(channel_id, existing_sid, model_opt).await?;
+                self.persist_sid(channel_id, AgentType::Copilot, agent.session_id())
                     .await?;
                 agent
             }

@@ -4,7 +4,7 @@ A high-performance Discord Bot daemon developed in Rust, designed to bridge and 
 
 ## Core Features
 
-- **Multi-backend Integration**: Unified interface for managing Pi (CLI), OpenCode (API), and Kilo (API) backends.
+- **Multi-backend Integration**: Unified interface for managing Pi (CLI), OpenCode (API), Kilo (API), and Copilot (ACP) backends.
 - **Real-time State Rendering**: Synchronized display of AI reasoning streams and tool execution (Tool Use) status.
 - **Session Lifecycle Management**: Dynamic backend switching, model selection, thinking level configuration, and command-based context compression (`/compact`).
 - **I18n Support**: Seamless switching between Traditional Chinese (zh-TW) and English (en), with automatic re-registration of Slash Commands to update localized descriptions.
@@ -34,6 +34,7 @@ A high-performance Discord Bot daemon developed in Rust, designed to bridge and 
     -   **Pi**: [github.com/mariozechner/pi-coding-agent](https://github.com/mariozechner/pi-coding-agent)
     -   **OpenCode**: `npm install -g @opencode-ai/cli`
     -   **Kilo**: `npm install -g @kilocode/cli`
+    -   **Copilot**: `copilot` (ACP backend, bot-managed lifecycle)
 
 ### Installation
 
@@ -63,6 +64,10 @@ cargo install --path .
       ```bash
       agent-discord auth <TOKEN_FROM_DISCORD>
       ```
+4.  **Copilot one-time login (if using Copilot backend)**:
+    ```bash
+    copilot login
+    ```
 
 ### Running the Bot
 
@@ -81,6 +86,7 @@ This project relies on the following backends for its AI capabilities. Special t
 - **[Pi](https://github.com/mariozechner/pi-coding-agent)**: The core for local automation and RPC calls.
 - **OpenCode**: A robust HTTP/SSE backend with full tool-calling support.
 - **Kilo**: A specialized backend implementation optimized for long-running sessions.
+- **Copilot**: ACP backend support for GitHub Copilot workflows with bot-managed lifecycle.
 
 ## License
 

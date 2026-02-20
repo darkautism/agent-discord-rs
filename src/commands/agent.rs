@@ -91,6 +91,7 @@ impl SlashCommand for AgentCommand {
         )
         .required(true)
         .add_string_choice("Kilo (高效單例)", "kilo")
+        .add_string_choice("Copilot (ACP 由 Bot 管理)", "copilot")
         .add_string_choice("Pi (本地 RPC)", "pi")
         .add_string_choice("OpenCode (HTTP API)", "opencode")]
     }
@@ -208,13 +209,34 @@ pub async fn handle_button(
             }
             Err(e) => {
                 // 連接失敗，不保存配置（回滾）
-                let error_msg = if agent_type == AgentType::Opencode {
-                    format!(
+                let error_text = e.to_string();
+                let error_msg = match agent_type {
+                    AgentType::Opencode => format!(
                         "❌ 無法連線至 OpenCode: {}\n\n請確認已在目標機器執行:\n```\nopencode serve --port {}\n```",
-                        e, state.config.opencode.port
-                    )
-                } else {
-                    format!("❌ 無法連線至 Pi: {}", e)
+                        error_text, state.config.opencode.port
+                    ),
+                    AgentType::Copilot => {
+                        let lower = error_text.to_lowercase();
+                        let auth_hint = if lower.contains("auth")
+                            || lower.contains("login")
+                            || lower.contains("unauthorized")
+                            || lower.contains("not authenticated")
+                        {
+                            "偵測到可能是登入/授權問題，請在「bot 服務實際執行的帳號」下確認:\n```\ncopilot login\n```"
+                        } else {
+                            "若你已登入，請確認 bot 服務使用的是同一個 Linux 帳號，並檢查 `copilot --version` 可正常執行。"
+                        };
+
+                        format!(
+                            "❌ 無法啟動 Copilot backend: {}\n\nCopilot 由 bot 自動維護，不需要手動執行 `copilot --acp`。\n{}",
+                            error_text, auth_hint
+                        )
+                    }
+                    AgentType::Kilo => format!(
+                        "❌ 無法連線至 Kilo: {}\n\n請確認已在目標機器執行:\n```\nkilo serve --port {}\n```",
+                        error_text, state.config.opencode.port
+                    ),
+                    AgentType::Pi => format!("❌ 無法連線至 Pi: {}", error_text),
                 };
 
                 interaction

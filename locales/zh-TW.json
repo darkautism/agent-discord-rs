@@ -14,7 +14,7 @@
   "exec_success": "✅ 已成功執行 `{}`",
   "exec_failed": "❌ 執行 `{}` 失敗",
   "auto_retry": "🔄 **自動重試** (第 {} 次，共 {} 次) 由於錯誤...",
-  "cmd_agent_desc": "切換 AI Agent 後端 (Kilo/Pi/OpenCode)",
+  "cmd_agent_desc": "切換 AI Agent 後端 (Kilo/Copilot/Pi/OpenCode)",
   "cmd_agent_opt_backend": "選擇後端類型",
   "cmd_model_desc": "切換當前頻道使用的模型",
   "cmd_thinking_desc": "設定 AI 的思考等級 (如果有支援)",

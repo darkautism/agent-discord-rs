@@ -96,6 +96,8 @@ pub enum AgentType {
     Pi,
     #[serde(rename = "opencode")]
     Opencode,
+    #[serde(rename = "copilot")]
+    Copilot,
     #[serde(rename = "kilo")]
     #[default]
     Kilo,
@@ -106,6 +108,7 @@ impl std::fmt::Display for AgentType {
         match self {
             AgentType::Pi => write!(f, "pi"),
             AgentType::Opencode => write!(f, "opencode"),
+            AgentType::Copilot => write!(f, "copilot"),
             AgentType::Kilo => write!(f, "kilo"),
         }
     }
@@ -117,16 +120,19 @@ impl std::str::FromStr for AgentType {
         match s.to_lowercase().as_str() {
             "pi" => Ok(AgentType::Pi),
             "opencode" => Ok(AgentType::Opencode),
+            "copilot" => Ok(AgentType::Copilot),
             "kilo" => Ok(AgentType::Kilo),
             _ => anyhow::bail!("Unknown agent type: {}", s),
         }
     }
 }
 
+pub mod copilot;
 pub mod kilo;
 pub mod manager;
 pub mod opencode;
 pub mod pi;
+pub use copilot::CopilotAgent;
 pub use kilo::KiloAgent;
 pub use opencode::OpencodeAgent;
 pub use pi::PiAgent;

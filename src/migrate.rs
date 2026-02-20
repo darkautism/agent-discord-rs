@@ -74,6 +74,7 @@ pub async fn run_migrations() -> anyhow::Result<()> {
         fs::create_dir_all(&new_dir).await?;
         fs::create_dir_all(new_dir.join("sessions").join("pi")).await?;
         fs::create_dir_all(new_dir.join("sessions").join("opencode")).await?;
+        fs::create_dir_all(new_dir.join("sessions").join("copilot")).await?;
         fs::create_dir_all(new_dir.join("prompts")).await?;
     }
 
@@ -228,6 +229,7 @@ async fn migrate_v0_to_v1(old_dir: &Path, new_dir: &Path) -> anyhow::Result<()> 
     fs::create_dir_all(&new_dir).await?;
     fs::create_dir_all(new_dir.join("sessions").join("pi")).await?;
     fs::create_dir_all(new_dir.join("sessions").join("opencode")).await?;
+    fs::create_dir_all(new_dir.join("sessions").join("copilot")).await?;
     fs::create_dir_all(new_dir.join("prompts")).await?;
 
     // 遷移 config.toml

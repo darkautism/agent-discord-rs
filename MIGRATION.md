@@ -21,7 +21,7 @@
 discord-rs daemon disable
 
 # 2. 手動複製資料
-mkdir -p ~/.agent-discord-rs/{sessions/pi,sessions/opencode,prompts}
+mkdir -p ~/.agent-discord-rs/{sessions/pi,sessions/opencode,sessions/copilot,prompts}
 cp ~/.pi/discord-rs/config.toml ~/.agent-discord-rs/
 cp ~/.pi/discord-rs/registry.json ~/.agent-discord-rs/auth.json
 cp ~/.pi/discord-rs/sessions/*.jsonl ~/.agent-discord-rs/sessions/pi/
@@ -42,6 +42,7 @@ agent-discord daemon enable
 
 - **Pi**: 本地 RPC 模式（原有功能）
 - **OpenCode**: HTTP API 模式（新增）
+- **Copilot**: ACP 模式（新增，由 bot 自動維護 lifecycle）
 
 #### 2. 切換 Agent
 
@@ -79,6 +80,16 @@ opencode serve --port 4096
 OPENCODE_SERVER_PASSWORD=your-password opencode serve
 ```
 
+#### 5. Copilot 設定（ACP）
+
+使用 Copilot backend 前，只需要在部署主機先登入一次：
+
+```bash
+copilot login
+```
+
+之後由 bot 自動啟動與維護 `copilot --acp`，一般使用者不需要手動執行任何 Copilot backend 指令。
+
 ### 目錄結構變更
 
 ```
@@ -89,7 +100,8 @@ OPENCODE_SERVER_PASSWORD=your-password opencode serve
 ├── .version              # 遷移版本記錄
 ├── sessions/
 │   ├── pi/              # Pi session 檔案
-│   └── opencode/        # OpenCode session 對應
+│   ├── opencode/        # OpenCode session 對應
+│   └── copilot/         # Copilot session 對應
 └── prompts/             # 提示詞檔案
 ```
 
