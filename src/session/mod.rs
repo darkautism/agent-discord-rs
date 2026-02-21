@@ -128,6 +128,7 @@ impl SessionManager {
                 session_id: None,
                 model_provider: None,
                 model_id: None,
+                assistant_name: None,
             });
 
         entry.session_id = Some(sid);

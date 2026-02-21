@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use tokio::sync::broadcast;
 
 #[derive(Clone, Debug)]
@@ -29,6 +30,73 @@ pub struct ContentItem {
     pub type_: ContentType,
     pub content: String,
     pub id: Option<String>, // 新增 ID 支持
+}
+
+#[derive(Clone, Debug)]
+pub struct UploadedFile {
+    pub id: String,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    pub local_path: String,
+    pub source_url: String,
+}
+
+impl UploadedFile {
+    pub fn is_image(&self) -> bool {
+        self.mime.starts_with("image/")
+    }
+
+    pub fn display_name(&self) -> String {
+        if self.name.is_empty() {
+            Path::new(&self.local_path)
+                .file_name()
+                .and_then(|v| v.to_str())
+                .unwrap_or("unknown")
+                .to_string()
+        } else {
+            self.name.clone()
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct UserInput {
+    pub text: String,
+    pub files: Vec<UploadedFile>,
+}
+
+impl UserInput {
+    pub fn new_text(text: String) -> Self {
+        Self {
+            text,
+            files: Vec::new(),
+        }
+    }
+
+    pub fn to_fallback_prompt(&self) -> String {
+        if self.files.is_empty() {
+            return self.text.clone();
+        }
+
+        let mut file_lines = Vec::new();
+        for (idx, file) in self.files.iter().enumerate() {
+            file_lines.push(format!(
+                "{}. {} | mime={} | size={}B | local_path={}",
+                idx + 1,
+                file.display_name(),
+                file.mime,
+                file.size,
+                file.local_path
+            ));
+        }
+
+        format!(
+            "{}\n\n[Uploaded Files]\n{}\n\nUse these file paths if your tools can read local files.",
+            self.text,
+            file_lines.join("\n")
+        )
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -76,6 +144,9 @@ pub enum AgentEvent {
 #[async_trait]
 pub trait AiAgent: Send + Sync {
     async fn prompt(&self, message: &str) -> anyhow::Result<()>;
+    async fn prompt_with_input(&self, input: &UserInput) -> anyhow::Result<()> {
+        self.prompt(&input.to_fallback_prompt()).await
+    }
     #[allow(dead_code)]
     async fn set_session_name(&self, name: &str) -> anyhow::Result<()>;
     async fn get_state(&self) -> anyhow::Result<AgentState>;
@@ -204,5 +275,44 @@ impl AiAgent for MockAgent {
     }
     fn agent_type(&self) -> &'static str {
         "mock"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{UploadedFile, UserInput};
+
+    #[test]
+    fn test_uploaded_file_display_name_fallback_to_path() {
+        let file = UploadedFile {
+            id: "1".to_string(),
+            name: String::new(),
+            mime: "text/plain".to_string(),
+            size: 10,
+            local_path: "/tmp/demo/a.txt".to_string(),
+            source_url: "https://example.com/a.txt".to_string(),
+        };
+        assert_eq!(file.display_name(), "a.txt");
+    }
+
+    #[test]
+    fn test_user_input_fallback_prompt_includes_files_section() {
+        let input = UserInput {
+            text: "Please analyze files".to_string(),
+            files: vec![UploadedFile {
+                id: "f1".to_string(),
+                name: "image.png".to_string(),
+                mime: "image/png".to_string(),
+                size: 1234,
+                local_path: "/tmp/uploads/image.png".to_string(),
+                source_url: "https://cdn.discordapp.com/x".to_string(),
+            }],
+        };
+
+        let rendered = input.to_fallback_prompt();
+        assert!(rendered.contains("[Uploaded Files]"));
+        assert!(rendered.contains("image.png"));
+        assert!(rendered.contains("mime=image/png"));
+        assert!(rendered.contains("local_path=/tmp/uploads/image.png"));
     }
 }

@@ -116,6 +116,15 @@ impl AuthManager {
         (false, false)
     }
 
+    pub fn get_channel_mention_only(&self, channel_id: &str) -> Option<bool> {
+        if let Ok(content) = fs::read_to_string(&self.auth_path) {
+            if let Ok(reg) = serde_json::from_str::<Registry>(&content) {
+                return reg.channels.get(channel_id).map(|entry| entry.mention_only);
+            }
+        }
+        None
+    }
+
     pub async fn is_authorized_with_thread(
         &self,
         ctx: &serenity::all::Context,

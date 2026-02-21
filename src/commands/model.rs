@@ -91,7 +91,7 @@ impl SlashCommand for ModelCommand {
                     // 使用 | 作為定界符，避免與 ID 內部的 / 衝突
                     let value = format!("{}|{}", m.provider, m.id);
                     CreateSelectMenuOption::new(&m.label, value)
-                        .description(format!("Provider: {}", m.provider))
+                        .description(i18n.get_args("model_provider_desc", &[m.provider.clone()]))
                 })
                 .collect();
 

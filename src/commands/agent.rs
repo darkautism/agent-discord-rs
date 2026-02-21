@@ -11,6 +11,75 @@ use crate::agent::AgentType;
 
 pub struct AgentCommand;
 
+fn is_binary_not_found(error_text: &str) -> bool {
+    let lower = error_text.to_lowercase();
+    lower.contains("no such file or directory")
+        || lower.contains("not found")
+        || lower.contains("enoent")
+}
+
+pub fn build_backend_error_message(
+    i18n: &crate::i18n::I18n,
+    agent_type: AgentType,
+    error_text: &str,
+    port: u16,
+) -> String {
+    let backend = agent_type.to_string();
+    let base = i18n.get_args(
+        "backend_start_failed",
+        &[backend.clone(), error_text.to_string()],
+    );
+
+    if is_binary_not_found(error_text) {
+        let install_cmd = match agent_type {
+            AgentType::Pi => "npm install -g pi-coding-agent",
+            AgentType::Opencode => "npm install -g @opencode-ai/cli",
+            AgentType::Kilo => "npm install -g @kilocode/cli",
+            AgentType::Copilot => "npm install -g @github/copilot",
+        };
+        return format!(
+            "{}\n\n{}:\n```bash\n{}\n```",
+            base,
+            i18n.get("backend_install_hint"),
+            install_cmd
+        );
+    }
+
+    match agent_type {
+        AgentType::Opencode => format!(
+            "{}\n\n{}:\n```bash\nopencode serve --port {}\n```",
+            base,
+            i18n.get("backend_start_hint"),
+            port
+        ),
+        AgentType::Kilo => format!(
+            "{}\n\n{}:\n```bash\nkilo serve --port {}\n```",
+            base,
+            i18n.get("backend_start_hint"),
+            port
+        ),
+        AgentType::Copilot => {
+            let lower = error_text.to_lowercase();
+            let auth_hint = if lower.contains("auth")
+                || lower.contains("login")
+                || lower.contains("unauthorized")
+                || lower.contains("not authenticated")
+            {
+                i18n.get("copilot_login_hint")
+            } else {
+                i18n.get("copilot_runtime_hint")
+            };
+            format!(
+                "{}\n\n{}\n{}",
+                base,
+                i18n.get("copilot_managed_hint"),
+                auth_hint
+            )
+        }
+        AgentType::Pi => format!("{}\n\n{}", base, i18n.get("pi_runtime_hint")),
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct ChannelConfig {
     #[serde(default)]
@@ -30,6 +99,7 @@ pub struct ChannelEntry {
     pub session_id: Option<String>,
     pub model_provider: Option<String>,
     pub model_id: Option<String>,
+    pub assistant_name: Option<String>,
 }
 
 impl ChannelConfig {
@@ -68,6 +138,7 @@ impl ChannelConfig {
                 session_id: None,
                 model_provider: None,
                 model_id: None,
+                assistant_name: None,
             });
         entry.agent_type = agent_type;
     }
@@ -90,10 +161,10 @@ impl SlashCommand for AgentCommand {
             i18n.get("cmd_agent_opt_backend"),
         )
         .required(true)
-        .add_string_choice("Kilo (高效單例)", "kilo")
-        .add_string_choice("Copilot (ACP 由 Bot 管理)", "copilot")
-        .add_string_choice("Pi (本地 RPC)", "pi")
-        .add_string_choice("OpenCode (HTTP API)", "opencode")]
+        .add_string_choice(i18n.get("agent_choice_kilo"), "kilo")
+        .add_string_choice(i18n.get("agent_choice_copilot"), "copilot")
+        .add_string_choice(i18n.get("agent_choice_pi"), "pi")
+        .add_string_choice(i18n.get("agent_choice_opencode"), "opencode")]
     }
 
     async fn execute(
@@ -210,34 +281,12 @@ pub async fn handle_button(
             Err(e) => {
                 // 連接失敗，不保存配置（回滾）
                 let error_text = e.to_string();
-                let error_msg = match agent_type {
-                    AgentType::Opencode => format!(
-                        "❌ 無法連線至 OpenCode: {}\n\n請確認已在目標機器執行:\n```\nopencode serve --port {}\n```",
-                        error_text, state.config.opencode.port
-                    ),
-                    AgentType::Copilot => {
-                        let lower = error_text.to_lowercase();
-                        let auth_hint = if lower.contains("auth")
-                            || lower.contains("login")
-                            || lower.contains("unauthorized")
-                            || lower.contains("not authenticated")
-                        {
-                            "偵測到可能是登入/授權問題，請在「bot 服務實際執行的帳號」下確認:\n```\ncopilot login\n```"
-                        } else {
-                            "若你已登入，請確認 bot 服務使用的是同一個 Linux 帳號，並檢查 `copilot --version` 可正常執行。"
-                        };
-
-                        format!(
-                            "❌ 無法啟動 Copilot backend: {}\n\nCopilot 由 bot 自動維護，不需要手動執行 `copilot --acp`。\n{}",
-                            error_text, auth_hint
-                        )
-                    }
-                    AgentType::Kilo => format!(
-                        "❌ 無法連線至 Kilo: {}\n\n請確認已在目標機器執行:\n```\nkilo serve --port {}\n```",
-                        error_text, state.config.opencode.port
-                    ),
-                    AgentType::Pi => format!("❌ 無法連線至 Pi: {}", error_text),
-                };
+                let error_msg = build_backend_error_message(
+                    &i18n,
+                    agent_type,
+                    &error_text,
+                    state.config.opencode.port,
+                );
 
                 interaction
                     .edit_response(
@@ -252,4 +301,39 @@ pub async fn handle_button(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_backend_error_message, is_binary_not_found};
+    use crate::agent::AgentType;
+    use crate::i18n::I18n;
+
+    #[test]
+    fn test_binary_not_found_detection() {
+        assert!(is_binary_not_found("Spawn failed: No such file or directory"));
+        assert!(is_binary_not_found("ENOENT: not found"));
+        assert!(!is_binary_not_found("connection refused"));
+    }
+
+    #[test]
+    fn test_backend_error_message_for_missing_binary_has_install_hint() {
+        let i18n = I18n::new("en");
+        let msg = build_backend_error_message(
+            &i18n,
+            AgentType::Opencode,
+            "Spawn failed: No such file or directory",
+            4096,
+        );
+        assert!(msg.contains("Install the backend first"));
+        assert!(msg.contains("npm install -g @opencode-ai/cli"));
+    }
+
+    #[test]
+    fn test_backend_error_message_for_opencode_has_start_command() {
+        let i18n = I18n::new("en");
+        let msg = build_backend_error_message(&i18n, AgentType::Opencode, "connection refused", 4096);
+        assert!(msg.contains("opencode serve --port 4096"));
+        assert!(msg.contains("Failed to start opencode backend"));
+    }
 }

@@ -76,6 +76,7 @@ pub async fn run_migrations() -> anyhow::Result<()> {
         fs::create_dir_all(new_dir.join("sessions").join("opencode")).await?;
         fs::create_dir_all(new_dir.join("sessions").join("copilot")).await?;
         fs::create_dir_all(new_dir.join("prompts")).await?;
+        fs::create_dir_all(new_dir.join("uploads")).await?;
     }
 
     write_version(&version_file, CURRENT_VERSION).await?;
@@ -231,6 +232,7 @@ async fn migrate_v0_to_v1(old_dir: &Path, new_dir: &Path) -> anyhow::Result<()> 
     fs::create_dir_all(new_dir.join("sessions").join("opencode")).await?;
     fs::create_dir_all(new_dir.join("sessions").join("copilot")).await?;
     fs::create_dir_all(new_dir.join("prompts")).await?;
+    fs::create_dir_all(new_dir.join("uploads")).await?;
 
     // 遷移 config.toml
     let old_config = old_dir.join("config.toml");
@@ -256,9 +258,10 @@ port = 4096
         fs::write(&new_config, final_content).await?;
     } else {
         // 創建默認配置
-        let default_config = r#"discord_token = "YOUR_DISCORD_TOKEN_HERE"
+let default_config = r#"discord_token = "YOUR_DISCORD_TOKEN_HERE"
 debug_level = "INFO"
 language = "zh-TW"
+assistant_name = "Agent"
 
 [opencode]
 host = "127.0.0.1"
@@ -316,4 +319,8 @@ pub fn get_sessions_dir(agent_type: &str) -> PathBuf {
 
 pub fn get_prompts_dir() -> PathBuf {
     get_base_dir().join("prompts")
+}
+
+pub fn get_uploads_dir() -> PathBuf {
+    get_base_dir().join("uploads")
 }

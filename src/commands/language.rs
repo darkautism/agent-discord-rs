@@ -26,8 +26,8 @@ impl SlashCommand for LanguageCommand {
             i18n.get("cmd_lang_opt_lang"),
         )
         .required(true)
-        .add_string_choice("繁體中文", "zh-TW")
-        .add_string_choice("English", "en")]
+        .add_string_choice(i18n.get("lang_choice_zh_tw"), "zh-TW")
+        .add_string_choice(i18n.get("lang_choice_en"), "en")]
     }
 
     async fn execute(

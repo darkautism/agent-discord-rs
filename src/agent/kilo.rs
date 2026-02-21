@@ -1,5 +1,5 @@
 use super::opencode::OpencodeAgent;
-use super::{AgentEvent, AgentState, AiAgent, ModelInfo};
+use super::{AgentEvent, AgentState, AiAgent, ModelInfo, UserInput};
 use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -40,6 +40,9 @@ impl KiloAgent {
 impl AiAgent for KiloAgent {
     async fn prompt(&self, message: &str) -> anyhow::Result<()> {
         self.inner.prompt(message).await
+    }
+    async fn prompt_with_input(&self, input: &UserInput) -> anyhow::Result<()> {
+        self.inner.prompt_with_input(input).await
     }
     async fn set_session_name(&self, name: &str) -> anyhow::Result<()> {
         self.inner.set_session_name(name).await

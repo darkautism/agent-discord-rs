@@ -1,4 +1,4 @@
-use agent::{AgentEvent, AiAgent, ContentType};
+use agent::{AgentEvent, AiAgent, ContentType, UserInput};
 use clap::{Parser, Subcommand};
 use rust_embed::RustEmbed;
 use serenity::all::{
@@ -23,6 +23,7 @@ mod composer;
 mod config;
 mod migrate;
 mod session;
+mod uploads;
 
 use auth::AuthManager;
 use commands::agent::{handle_button, ChannelConfig};
@@ -31,6 +32,7 @@ use config::Config;
 use cron::CronManager;
 use i18n::I18n;
 use session::SessionManager;
+use uploads::UploadManager;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -74,6 +76,7 @@ pub struct AppState {
     pub backend_manager: Arc<agent::manager::BackendManager>,
     pub cron_manager: Arc<CronManager>,
     pub active_renders: Arc<Mutex<ActiveRenderMap>>,
+    pub upload_manager: Arc<UploadManager>,
 }
 
 fn load_all_prompts() -> String {
@@ -122,7 +125,7 @@ impl Handler {
         http: Arc<serenity::http::Http>,
         channel_id: serenity::model::id::ChannelId,
         state: AppState,
-        initial_message: Option<String>,
+        initial_input: Option<UserInput>,
         is_brand_new: bool,
     ) {
         let channel_id_u64 = channel_id.get();
@@ -168,23 +171,33 @@ impl Handler {
 
         let composer: Arc<Mutex<EmbedComposer>> = Arc::new(Mutex::new(EmbedComposer::new(3900)));
         let status: Arc<Mutex<ExecStatus>> = Arc::new(Mutex::new(ExecStatus::Running));
+        let assistant_name = {
+            let channel_cfg = ChannelConfig::load().await.unwrap_or_default();
+            channel_cfg
+                .channels
+                .get(&channel_id.to_string())
+                .and_then(|e| e.assistant_name.clone())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| state.config.assistant_name.clone())
+        };
 
         // --- 任務啟動：收集所有 Handles ---
         let mut handles = Vec::new();
 
-        if let Some(msg) = initial_message {
-            let mut final_msg = msg;
+        if let Some(mut input) = initial_input {
+            let mut final_msg = input.text;
             if is_brand_new {
                 let prompts = load_all_prompts();
                 if !prompts.is_empty() {
                     final_msg = format!("{}\n\n{}", prompts, final_msg);
                 }
             }
+            input.text = final_msg;
             let agent_for_prompt = Arc::clone(&agent);
             let status_for_prompt = Arc::clone(&status);
             let composer_for_prompt = Arc::clone(&composer);
             handles.push(tokio::spawn(async move {
-                if let Err(e) = agent_for_prompt.prompt(&final_msg).await {
+                if let Err(e) = agent_for_prompt.prompt_with_input(&input).await {
                     let mut s = status_for_prompt.lock().await;
                     let comp = composer_for_prompt.lock().await;
                     if *s == ExecStatus::Running {
@@ -220,6 +233,7 @@ impl Handler {
         let mut render_msg = discord_msg.clone();
         let render_i18n = Arc::clone(&state.i18n);
         let render_state = state.clone();
+        let render_assistant_name = assistant_name.clone();
         let render_channel_id = channel_id;
         let render_msg_id = discord_msg.id;
 
@@ -244,11 +258,18 @@ impl Handler {
                             embed = embed
                                 .title(i18n.get("api_error"))
                                 .color(0xff0000)
-                                .description(format!("{}\n\n❌ **錯誤:** {}", desc, e));
+                                .description(format!(
+                                    "{}\n\n{} {}",
+                                    desc,
+                                    i18n.get("runtime_error_prefix"),
+                                    e
+                                ));
                         }
                         ExecStatus::Success => {
+                            let title = i18n
+                                .get_args("agent_response", &[render_assistant_name.clone()]);
                             embed = embed
-                                .title(i18n.get("pi_response"))
+                                .title(title)
                                 .color(0x00ff00)
                                 .description(if desc.is_empty() {
                                     i18n.get("done")
@@ -257,8 +278,10 @@ impl Handler {
                                 });
                         }
                         ExecStatus::Running => {
+                            let title = i18n
+                                .get_args("agent_working", &[render_assistant_name.clone()]);
                             embed = embed
-                                .title(i18n.get("pi_working"))
+                                .title(title)
                                 .color(0xFFA500)
                                 .description(if desc.is_empty() {
                                     i18n.get("wait")
@@ -482,11 +505,12 @@ impl EventHandler for Handler {
         if !is_auth {
             if msg.mentions_me(&ctx).await.unwrap_or(false) {
                 if let Ok(token) = self.state.auth.create_token("channel", &channel_id_str) {
+                    let auth_msg = {
+                        let i18n = self.state.i18n.read().await;
+                        i18n.get_args("auth_required_cmd", &[token])
+                    };
                     let _ = msg
-                        .reply(
-                            &ctx.http,
-                            format!("🔒 需要認證！\n`agent-discord auth {}`", token),
-                        )
+                        .reply(&ctx.http, auth_msg)
                         .await;
                 }
             }
@@ -499,6 +523,15 @@ impl EventHandler for Handler {
 
         let channel_config = ChannelConfig::load().await.unwrap_or_default();
         let agent_type = channel_config.get_agent_type(&channel_id_str);
+        let files = self
+            .state
+            .upload_manager
+            .stage_attachments(msg.channel_id.get(), &msg.attachments)
+            .await;
+        let input = UserInput {
+            text: msg.content.clone(),
+            files,
+        };
 
         let state = self.state.clone();
         tokio::spawn(async move {
@@ -513,12 +546,27 @@ impl EventHandler for Handler {
                         ctx.http.clone(),
                         msg.channel_id,
                         state,
-                        Some(msg.content),
+                        Some(input),
                         is_new,
                     )
                     .await;
                 }
-                Err(e) => error!("❌ Session error: {}", e),
+                Err(e) => {
+                    error!("❌ Session error: {}", e);
+                    let err_text = e.to_string();
+                    let channel_config = ChannelConfig::load().await.unwrap_or_default();
+                    let backend = channel_config.get_agent_type(&msg.channel_id.to_string());
+                    let user_msg = {
+                        let i18n = state.i18n.read().await;
+                        crate::commands::agent::build_backend_error_message(
+                            &i18n,
+                            backend,
+                            &err_text,
+                            state.config.opencode.port,
+                        )
+                    };
+                    let _ = msg.reply(&ctx.http, user_msg).await;
+                }
             }
         });
     }
@@ -535,12 +583,16 @@ impl EventHandler for Handler {
                 .await;
 
             if !is_auth {
+                let not_auth_msg = {
+                    let i18n = self.state.i18n.read().await;
+                    i18n.get("mention_not_auth")
+                };
                 let _ = command
                     .create_response(
                         &ctx.http,
                         CreateInteractionResponse::Message(
                             CreateInteractionResponseMessage::new()
-                                .content("❌ 頻道尚未認證")
+                                .content(not_auth_msg)
                                 .ephemeral(true),
                         ),
                     )
@@ -569,7 +621,9 @@ impl EventHandler for Handler {
             }
         } else if let Interaction::Component(component) = interaction {
             let custom_id = component.data.custom_id.as_str();
-            if custom_id.starts_with("agent_") {
+            if custom_id.starts_with("config_") {
+                let _ = commands::config::handle_config_select(&ctx, &component, &self.state).await;
+            } else if custom_id.starts_with("agent_") {
                 let _ = handle_button(&ctx, &component, &self.state).await;
             } else if custom_id == "cron_delete_select" {
                 let state = self.state.clone();
@@ -617,6 +671,11 @@ async fn run_bot() -> anyhow::Result<()> {
         backend_manager: Arc::new(agent::manager::BackendManager::new(config.clone())),
         cron_manager,
         active_renders: Arc::new(Mutex::new(HashMap::new())),
+        upload_manager: Arc::new(UploadManager::new(
+            20 * 1024 * 1024,
+            std::time::Duration::from_secs(24 * 60 * 60),
+            std::time::Duration::from_secs(10 * 60),
+        )?),
     });
     let mut client = Client::builder(
         &state.config.discord_token,

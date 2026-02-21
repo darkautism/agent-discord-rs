@@ -1,5 +1,6 @@
-use super::{AgentEvent, AgentState, AiAgent, ContentItem, ContentType, ModelInfo};
+use super::{AgentEvent, AgentState, AiAgent, ContentItem, ContentType, ModelInfo, UserInput};
 use async_trait::async_trait;
+use base64::Engine;
 use eventsource_client::{Client, ClientBuilder, SSE};
 use futures::StreamExt;
 use serde_json::{json, Value};
@@ -24,6 +25,8 @@ pub struct OpencodeAgent {
 }
 
 impl OpencodeAgent {
+    const MAX_INLINE_FILE_BYTES: u64 = 4 * 1024 * 1024;
+
     pub async fn new(
         channel_id: u64,
         base_url: String,
@@ -113,12 +116,60 @@ impl OpencodeAgent {
         Ok(agent)
     }
 
-    fn construct_message_body(message: &str, model_opt: &Option<(String, String)>) -> Value {
-        let mut body = json!({ "parts": [{"type": "text", "text": message}] });
+    async fn construct_message_body(input: &UserInput, model_opt: &Option<(String, String)>) -> Value {
+        let (text, extra_parts) = Self::build_parts_from_input(input).await;
+        let mut parts = vec![json!({ "type": "text", "text": text })];
+        parts.extend(extra_parts);
+
+        let mut body = json!({ "parts": parts });
         if let Some((provider, model)) = model_opt {
             body["model"] = json!({ "providerID": provider, "modelID": model });
         }
         body
+    }
+
+    async fn build_parts_from_input(input: &UserInput) -> (String, Vec<Value>) {
+        if input.files.is_empty() {
+            return (input.text.clone(), Vec::new());
+        }
+
+        let mut summary_lines = Vec::new();
+        let mut parts = Vec::new();
+
+        for file in &input.files {
+            let mut status = "fallback_path";
+            if file.size <= Self::MAX_INLINE_FILE_BYTES {
+                if let Ok(raw) = tokio::fs::read(&file.local_path).await {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(raw);
+                    let part_type = if file.is_image() { "image" } else { "file" };
+                    parts.push(json!({
+                        "type": part_type,
+                        "filename": file.display_name(),
+                        "mimeType": file.mime,
+                        "data": b64
+                    }));
+                    status = "inline_base64";
+                }
+            }
+
+            summary_lines.push(format!(
+                "- {} | mime={} | size={}B | local_path={} | source_url={} | mode={}",
+                file.display_name(),
+                file.mime,
+                file.size,
+                file.local_path,
+                file.source_url,
+                status
+            ));
+        }
+
+        let enriched_text = format!(
+            "{}\n\n[Uploaded Files]\n{}\n\nUse inline files when available. If inline is missing, use local_path via tools.",
+            input.text,
+            summary_lines.join("\n")
+        );
+
+        (enriched_text, parts)
     }
 
     #[cfg(test)]
@@ -309,10 +360,15 @@ impl OpencodeAgent {
 #[async_trait]
 impl AiAgent for OpencodeAgent {
     async fn prompt(&self, message: &str) -> anyhow::Result<()> {
+        self.prompt_with_input(&UserInput::new_text(message.to_string()))
+            .await
+    }
+
+    async fn prompt_with_input(&self, input: &UserInput) -> anyhow::Result<()> {
         let url = format!("{}/session/{}/message", self.base_url, self.session_id);
         self.turn_failed.store(false, Ordering::SeqCst);
         let model_opt = self.current_model.lock().await.clone();
-        let body = Self::construct_message_body(message, &model_opt);
+        let body = Self::construct_message_body(input, &model_opt).await;
 
         let max_retries = 3;
         let retry_delay = Self::retry_delay();

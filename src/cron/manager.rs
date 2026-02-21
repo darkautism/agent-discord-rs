@@ -150,7 +150,7 @@ impl CronManager {
                                     http.clone(),
                                     channel_id,
                                     (*state).clone(),
-                                    Some(prompt),
+                                    Some(crate::agent::UserInput::new_text(prompt)),
                                     is_new,
                                 )
                                 .await;

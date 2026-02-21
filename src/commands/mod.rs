@@ -7,6 +7,7 @@ pub mod abort;
 pub mod agent;
 pub mod clear;
 pub mod compact;
+pub mod config;
 pub mod cron;
 pub mod language;
 pub mod mention_only;
@@ -44,6 +45,7 @@ pub fn get_all_commands() -> Vec<Box<dyn SlashCommand>> {
         Box::new(model::ModelCommand),
         Box::new(thinking::ThinkingCommand),
         Box::new(compact::CompactCommand),
+        Box::new(config::ConfigCommand),
         Box::new(clear::ClearCommand),
         Box::new(abort::AbortCommand),
         Box::new(skill::SkillCommand),

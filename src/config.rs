@@ -6,6 +6,8 @@ pub struct Config {
     pub debug_level: Option<String>,
     #[serde(default = "default_lang")]
     pub language: String,
+    #[serde(default = "default_assistant_name")]
+    pub assistant_name: String,
     #[serde(default)]
     pub opencode: OpencodeConfig,
 }
@@ -33,6 +35,10 @@ fn default_lang() -> String {
     "zh-TW".to_string()
 }
 
+fn default_assistant_name() -> String {
+    "Agent".to_string()
+}
+
 fn default_host() -> String {
     "127.0.0.1".to_string()
 }
@@ -50,6 +56,7 @@ impl Config {
             let default_config = r#"discord_token = "YOUR_DISCORD_TOKEN_HERE"
 debug_level = "INFO"
 language = "zh-TW"
+assistant_name = "Agent"
 
 [opencode]
 host = "127.0.0.1"

@@ -23,12 +23,12 @@ impl SlashCommand for ThinkingCommand {
             i18n.get("cmd_thinking_opt_level"),
         )
         .required(true)
-        .add_string_choice("off", "off")
-        .add_string_choice("minimal", "minimal")
-        .add_string_choice("low", "low")
-        .add_string_choice("medium", "medium")
-        .add_string_choice("high", "high")
-        .add_string_choice("xhigh", "xhigh")]
+        .add_string_choice(i18n.get("thinking_level_off"), "off")
+        .add_string_choice(i18n.get("thinking_level_minimal"), "minimal")
+        .add_string_choice(i18n.get("thinking_level_low"), "low")
+        .add_string_choice(i18n.get("thinking_level_medium"), "medium")
+        .add_string_choice(i18n.get("thinking_level_high"), "high")
+        .add_string_choice(i18n.get("thinking_level_xhigh"), "xhigh")]
     }
 
     async fn execute(
