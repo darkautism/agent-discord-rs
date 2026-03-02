@@ -16,19 +16,20 @@ serde_json = "1.0.149"
 anyhow = "1.0.101"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.22"
-toml = "0.8.23"
+toml = "1.0.3+spec-1.1.0"
 async-trait = "0.1.89"
 uuid = { version = "1.21", features = ["v4", "serde"] }
-tokio-cron-scheduler = "0.10.2"
+tokio-cron-scheduler = "0.15.1"
 cron-descriptor = "0.1.1"
 clap = { version = "4.5.59", features = ["derive"] }
 rust-embed = "8.11"
 fs2 = "0.4.3"
-rand = "0.9"
+rand = "0.10"
 chrono = { version = "0.4.43", features = ["serde"] }
 tempfile = "3.25"
-reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
-eventsource-client = "0.16"
+reqwest = { version = "0.13.2", default-features = false, features = ["json"] }
+eventsource-client = "0.17"
+launchdarkly-sdk-transport = { version = "0.1", features = ["hyper-rustls-native-roots"] }
 futures = "0.3.32"
 base64 = "0.22.1"
 dirs = "6.0"

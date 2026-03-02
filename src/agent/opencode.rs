@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use eventsource_client::{Client, ClientBuilder, SSE};
 use futures::StreamExt;
+use launchdarkly_sdk_transport::HyperTransport;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -103,10 +104,14 @@ impl OpencodeAgent {
 
         tokio::spawn(async move {
             let mut retry = 0;
+            let transport = match HyperTransport::new_https() {
+                Ok(t) => t,
+                Err(_) => return,
+            };
             loop {
                 let sse_client = match ClientBuilder::for_url(&sse_url) {
                     Ok(b) => match b.header("Authorization", &auth_header) {
-                        Ok(b) => b.build(),
+                        Ok(b) => b.build_with_transport(transport.clone()),
                         Err(_) => break,
                     },
                     Err(_) => break,

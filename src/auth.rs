@@ -3,7 +3,7 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use fs2::FileExt;
 use rand::distr::Alphanumeric;
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
