@@ -1,7 +1,8 @@
 <div align="center">
 
 <picture>
-   <img alt="Logo for Agent Discord" src="doc/images/banner.jpg" width="auto" height="400px">
+   <source media="(prefers-color-scheme: dark)" srcset="doc/images/header-dark.png">
+   <img alt="Logo for Agent Discord Rust" src="doc/images/header-light.png">
 </picture>
 
 # Agent Discord 
