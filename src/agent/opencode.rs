@@ -48,6 +48,10 @@ pub struct OpencodeAgent {
 impl OpencodeAgent {
     const MAX_INLINE_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
+    fn is_valid_session_id(sid: &str) -> bool {
+        sid.starts_with("ses_")
+    }
+
     pub async fn new(
         channel_id: u64,
         base_url: String,
@@ -59,7 +63,21 @@ impl OpencodeAgent {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
             .build()?;
-        let mut session_id = existing_sid;
+        
+        let mut session_id = if let Some(ref sid) = existing_sid {
+            if Self::is_valid_session_id(sid) {
+                info!("Using existing valid session ID: {}", sid);
+                Some(sid.clone())
+            } else {
+                info!(
+                    "Invalid session ID format {:?}, creating new session for {}",
+                    sid, agent_type_name
+                );
+                None
+            }
+        } else {
+            None
+        };
 
         if session_id.is_none() {
             info!(
@@ -1164,5 +1182,27 @@ mod tests {
             OpencodeAgent::parse_realtime_event(&unknown_type),
             RealtimeEventAction::Ignore
         );
+    }
+
+    #[test]
+    fn test_session_id_format_valid_when_starts_with_ses() {
+        assert!(OpencodeAgent::is_valid_session_id("ses_abc123"));
+        assert!(OpencodeAgent::is_valid_session_id("ses_"));
+        assert!(OpencodeAgent::is_valid_session_id("ses_38ef10514ffegXQlChPObI5QJL"));
+    }
+
+    #[test]
+    fn test_session_id_format_invalid_for_uuid() {
+        assert!(!OpencodeAgent::is_valid_session_id("bbe807ea-c9fa-4e7a-bf02-b945bce81562"));
+        assert!(!OpencodeAgent::is_valid_session_id("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(!OpencodeAgent::is_valid_session_id("f1d24692aad24d4a9c5abc4bdadb5a5b"));
+    }
+
+    #[test]
+    fn test_session_id_format_invalid_for_other_patterns() {
+        assert!(!OpencodeAgent::is_valid_session_id("kilo_session"));
+        assert!(!OpencodeAgent::is_valid_session_id(""));
+        assert!(!OpencodeAgent::is_valid_session_id("random"));
+        assert!(!OpencodeAgent::is_valid_session_id("copilot_abc"));
     }
 }
