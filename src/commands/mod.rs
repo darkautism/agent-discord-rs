@@ -5,13 +5,15 @@ use crate::i18n::I18n;
 
 pub mod abort;
 pub mod agent;
-pub mod clear;
 pub mod compact;
 pub mod config;
 pub mod cron;
+pub mod delete;
 pub mod language;
 pub mod mention_only;
 pub mod model;
+pub mod new;
+pub mod reset;
 pub mod skill;
 pub mod thinking;
 
@@ -46,7 +48,9 @@ pub fn get_all_commands() -> Vec<Box<dyn SlashCommand>> {
         Box::new(thinking::ThinkingCommand),
         Box::new(compact::CompactCommand),
         Box::new(config::ConfigCommand),
-        Box::new(clear::ClearCommand),
+        Box::new(delete::DeleteCommand),
+        Box::new(new::NewCommand),
+        Box::new(reset::ResetCommand),
         Box::new(abort::AbortCommand),
         Box::new(skill::SkillCommand),
         Box::new(mention_only::MentionOnlyCommand),

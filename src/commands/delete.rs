@@ -5,16 +5,16 @@ use serenity::all::{CommandInteraction, Context, EditInteractionResponse};
 use super::agent::ChannelConfig;
 use crate::migrate;
 
-pub struct ClearCommand;
+pub struct DeleteCommand;
 
 #[async_trait]
-impl SlashCommand for ClearCommand {
+impl SlashCommand for DeleteCommand {
     fn name(&self) -> &'static str {
-        "clear"
+        "delete"
     }
 
     fn description(&self, i18n: &crate::i18n::I18n) -> String {
-        i18n.get("cmd_clear_desc")
+        i18n.get("cmd_delete_desc")
     }
 
     async fn execute(
@@ -61,7 +61,7 @@ impl SlashCommand for ClearCommand {
         }
 
         let i18n = state.i18n.read().await;
-        let msg = i18n.get("clear_success");
+        let msg = i18n.get("delete_success");
         drop(i18n);
 
         command
