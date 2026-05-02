@@ -862,6 +862,18 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Some(Commands::Auth { token }) => {
+            let auth = auth::AuthManager::new();
+            match auth.redeem_token(&token) {
+                Ok((type_, id)) => {
+                    println!("✅ Authorized {}: {}", type_, id);
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed to redeem token: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => run_bot().await?,
     }
     Ok(())
